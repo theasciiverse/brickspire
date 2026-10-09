@@ -237,9 +237,18 @@ cargo test --release
   (4x1 at the smallest, a 67x19 field that fits 80x24; 8x2 next), grid aligned to cells.
 - `audio.rs`: every sound synthesised at start-up (rodio, no audio files), after
   SIGPIPE's `audio.rs`; the rules ask for `game::Sound`s each step.
+- `title.rs`: the BRICKSPIRE logo, spelled in bricks (3 by 5 letters), drawn over
+  the map a new game opens on.
 - `input.rs`: keys (exact or timing), mouse chase and click, gamepad (stick aims on the roof).
 
 ## Status
+
+Title (2026-10-10, overnight): a new game opens on the map with BRICKSPIRE spelled
+in bricks across the top, each letter in a brick colour with a sheen sweeping
+across (bevelled half-block squares as big as fit; `├┤` pipes on their colour in
+pipe mode), "AN ASCIIVERSE BRICK BREAKER · FIVE TOWERS TO CLIMB" under it, then
+"FIRST: THE OLD KEEP · space to climb". Step 6 still lacks music and a saved best
+score.
 
 Sound (2026-10-09, overnight; step 6 begun): synthesised effects, no files. The
 paddle's wooden tock, a tick off the walls, each brick broken in a row since the

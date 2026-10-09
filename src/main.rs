@@ -20,6 +20,7 @@ mod physics;
 mod power;
 mod render;
 mod roof;
+mod title;
 mod tower;
 
 use game::{Game, Mode, Pilot, State, STEP};
@@ -194,7 +195,7 @@ fn run() -> io::Result<()> {
         terminal.draw(|f| {
             let area = f.area();
             draw_world(&game, &view, glyphs, f.buffer_mut());
-            hud(&game, &input, best, paused, area, f.buffer_mut());
+            hud(&game, &input, best, paused, glyphs, area, f.buffer_mut());
         })?;
     };
 
@@ -271,7 +272,7 @@ fn banner(msg: &str, y: u16, area: Rect, buf: &mut Buffer) {
     Paragraph::new(msg).style(Style::default().bg(Color::Rgb(0, 0, 0)).fg(AMBER).add_modifier(Modifier::BOLD)).render(r, buf);
 }
 
-fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mut Buffer) {
+fn hud(game: &Game, input: &Input, best: u32, paused: bool, glyphs: bool, area: Rect, buf: &mut Buffer) {
     let bar = Style::default().bg(Color::Rgb(0, 0, 0)).fg(AMBER);
     let grey = bar.fg(Color::Rgb(170, 170, 170));
     let lives: String = "▬ ".repeat(game.lives as usize);
@@ -340,7 +341,7 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
         _ => game.caught.map(|(p, _)| format!(" {} ", p.told())),
     };
     if let Some(p) = game.map() {
-        map_labels(&p, area, buf);
+        map_labels(&p, glyphs, area, buf);
     }
     if paused {
         banner(" PAUSED · p to carry on ", mid, area, buf);
@@ -351,7 +352,7 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
 
 /// The map's words: what was climbed, each known tower's name under it (`?` for the
 /// rest), and once the trail is drawn, where next.
-fn map_labels(p: &map::Progress, area: Rect, buf: &mut Buffer) {
+fn map_labels(p: &map::Progress, glyphs: bool, area: Rect, buf: &mut Buffer) {
     let world = world_area(area);
     let h_px = world.height as f32 * 2.0;
     let aspect = world.width as f32 / h_px;
@@ -375,17 +376,26 @@ fn map_labels(p: &map::Progress, area: Rect, buf: &mut Buffer) {
         let r = Rect { x: world.x + col, y: row, width: w.min(world.width), height: 1 };
         Paragraph::new(name).style(Style::default().fg(fg).add_modifier(Modifier::BOLD)).render(r, buf);
     }
+    // a new game: the title, spelled in bricks, over the map
+    let mut below = world.y + world.height / 8 + 2;
+    if p.start {
+        below = title::draw(world, buf, glyphs, p.time, fade).max(world.y + 1);
+        banner(" AN ASCIIVERSE BRICK BREAKER · FIVE TOWERS TO CLIMB ", below, area, buf);
+        below += 2;
+    }
     let title = if p.start {
-        " THE CLIMB BEGINS · FIVE TOWERS TO THE TOP ".to_string()
+        String::new()
     } else if p.next <= p.from {
         " EVERY TOWER CLIMBED · THE CLIMB BEGINS AGAIN ".to_string()
     } else {
         format!(" {} CLIMBED · TOWER BONUS 5000 ", map::SKYLINE[p.from].name.to_uppercase())
     };
-    banner(&title, world.y + world.height / 8, area, buf);
+    if !title.is_empty() {
+        banner(&title, world.y + world.height / 8, area, buf);
+    }
     if p.ready() && p.leave.is_none() {
         let word = if p.start { "FIRST" } else { "NEXT" };
-        banner(&format!(" {word}: {} · space to climb ", map::SKYLINE[p.next].name.to_uppercase()), world.y + world.height / 8 + 2, area, buf);
+        banner(&format!(" {word}: {} · space to climb ", map::SKYLINE[p.next].name.to_uppercase()), below, area, buf);
     }
 }
 
@@ -439,7 +449,7 @@ fn snapshot(out: &str) -> io::Result<()> {
         draw_world(&game, &view, glyphs, &mut buf);
     }
     eprintln!("draw: {:.2} ms per frame at {cols}x{rows}", t0.elapsed().as_secs_f64() * 1000.0 / reps as f64);
-    hud(&game, &Input::new(false), game.score, false, area, &mut buf);
+    hud(&game, &Input::new(false), game.score, false, glyphs, area, &mut buf);
     println!("{}", summary(&game));
     let text: String = (0..rows).map(|r| (0..cols).map(|c| buf[(c, r)].symbol().to_string()).collect::<String>() + "\n").collect();
     std::fs::write(format!("{out}.txt"), text)?;
