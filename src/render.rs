@@ -3,7 +3,7 @@
 //! pixel is shaded by asking the world what lies under its centre, so the picture
 //! scales to any terminal; round things (ball, paddle) get analytic anti-aliasing.
 
-use crate::game::{self, Game, Kind, Mode, LEDGE, BALL_R, BRICK_H, BRICK_W, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, PADDLE_TH, WALL, WORLD_H, WORLD_W};
+use crate::game::{self, Game, Kind, Mode, LEDGE, BALL_R, BRICK_H, BRICK_W, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_TH, WALL, WORLD_H};
 use crate::boss::{self, Gargoyle, Weathercock};
 use crate::roof::{self, RoofView, Seen, Tilt};
 use crate::game::Balcony;
@@ -24,11 +24,11 @@ pub struct View {
 }
 
 impl View {
-    /// The world fitted to `area`, then pulled back by `zoom` (1 is a snug fit).
-    pub fn new(area: Rect, zoom: f32) -> View {
+    /// The box of world `size` round `centre` fitted to `area`, centred.
+    pub fn new(area: Rect, (centre, size): (V2, V2)) -> View {
         let (w, h) = (area.width as f32, area.height as f32 * 2.0);
-        let s = (w / WORLD_W).min(h / WORLD_H).max(0.01) * zoom;
-        View { area, s, ox: (w - WORLD_W * s) / 2.0, oy: (h - WORLD_H * s) / 2.0 }
+        let s = (w / size.x).min(h / size.y).max(0.01);
+        View { area, s, ox: w / 2.0 - centre.x * s, oy: h / 2.0 - centre.y * s }
     }
 
     /// The world point under the middle of a terminal cell.
@@ -176,8 +176,8 @@ fn roof_top(game: &Game, roof: &RoofView, q: V2, ps: f32) -> Rgb {
     let d = off.len();
     let ang = off.y.atan2(off.x);
     if d > roof::RIM - roof::PARAPET {
-        // 24 merlons round the rim, lit on their outer faces
-        let merlon = (ang / (std::f32::consts::TAU / 24.0)).rem_euclid(1.0) < 0.55;
+        // merlons round the rim, lit on their outer faces
+        let merlon = roof::merlon_at(ang);
         let edge = (d - (roof::RIM - roof::PARAPET)) / roof::PARAPET;
         return if merlon { mix([190.0, 182.0, 166.0], [120.0, 114.0, 108.0], edge) } else { mix([70.0, 66.0, 64.0], [40.0, 38.0, 40.0], edge) };
     }
@@ -348,7 +348,7 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
     if d < PADDLE_TH + ps && !climbing {
         let along = (q - (a + b) * 0.5).dot((b - a).norm()).abs();
         let across = off.dot(n) / PADDLE_TH; // +1 top face, -1 underside
-        let mut body = if along > PADDLE_HALF - 2.0 { [40.0, 200.0, 185.0] } else { [235.0, 170.0, 55.0] };
+        let mut body = if along > game.paddle_half() - 2.0 { [40.0, 200.0, 185.0] } else { [235.0, 170.0, 55.0] };
         if game.stun > 0.0 {
             // stunned: greyed, flickering
             let flick = if (game.time * 20.0) as i32 % 2 == 0 { 0.35 } else { 0.6 };

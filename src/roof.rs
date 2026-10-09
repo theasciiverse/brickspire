@@ -16,9 +16,29 @@ use crate::physics::V2;
 use crate::tower::{self, BrickHere, STEP_H};
 use std::f32::consts::FRAC_PI_2;
 
-/// The roof's outer radius (parapet included) and the parapet's thickness.
-pub const RIM: f32 = 28.5;
-pub const PARAPET: f32 = 2.2;
+/// The roof's outer radius (parapet included) and the parapet's thickness. The
+/// paddle's ring sits well inside, leaving open roof between it and the parapet: a
+/// ball that gets past the paddle bounces off the merlons back into play, and is lost
+/// only through the gaps between them.
+pub const RIM: f32 = 33.0;
+pub const PARAPET: f32 = 2.4;
+/// The paddle's ring: as far out as leaves room behind it for a ball to get past and
+/// bounce off the merlons (3.4 between the paddle's back and the parapet).
+pub const RING: f32 = 26.0;
+/// How many merlons, and how much of the rim they cover (the rest is gaps).
+pub const MERLONS: f32 = 16.0;
+pub const MERLON_SHARE: f32 = 0.65;
+
+/// Is the parapet solid (a merlon) at screen angle `a`?
+pub fn merlon_at(a: f32) -> bool {
+    (a / (std::f32::consts::TAU / MERLONS)).rem_euclid(1.0) < MERLON_SHARE
+}
+
+/// The merlons as angle spans, for the physics.
+pub fn merlons() -> impl Iterator<Item = (f32, f32)> {
+    let step = std::f32::consts::TAU / MERLONS;
+    (0..MERLONS as usize).map(move |k| (k as f32 * step, (k as f32 + MERLON_SHARE) * step))
+}
 /// The tilt when the camera starts up: just above level with the tower top.
 const START_TILT: f32 = 0.12;
 /// How tall the parapet's outer wall stands, in side-view units.
@@ -182,7 +202,7 @@ mod tests {
             }
         }
         // and nothing of the tower's side is left, at the middle or the corners
-        for (x, y) in [(50.0, 58.5), (25.0, 55.0), (75.0, 55.0), (22.0, 50.0)] {
+        for (x, y) in [(50.0, 29.0 + RIM + 1.5), (25.0, 55.0), (75.0, 55.0), (22.0, 52.0)] {
             assert!(matches!(t.seen(V2::new(x, y), 200.0), Seen::Beyond), "{x},{y}");
         }
     }

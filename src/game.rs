@@ -6,6 +6,7 @@
 use crate::boss::{self, Gargoyle, Hurt, Shot, Weathercock};
 use crate::levels::{self, Floor, FloorKind};
 use crate::physics::{self, Hit, Path, V2};
+use crate::roof;
 use log::info;
 use std::f32::consts::PI;
 
@@ -43,6 +44,13 @@ const PADDLE_SPEED: f32 = 95.0;
 const PADDLE_CHASE: f32 = 360.0;
 const SPEED_START: f32 = 48.0;
 const SPEED_MAX: f32 = 92.0;
+/// On the roof the paddle may have to go half way round the ring while the ball
+/// crosses it, so there it is longer and faster, and the ball slower. (A bigger ring
+/// alone wouldn't help: both distances grow together.)
+const ROOF_PADDLE_HALF: f32 = 9.0;
+const ROOF_PADDLE_SPEED: f32 = 188.0;
+const ROOF_SPEED_START: f32 = 40.0;
+const ROOF_SPEED_MAX: f32 = 66.0;
 const SPEED_PER_HIT: f32 = 0.6;
 /// How far from the paddle's normal the ball leaves at the very end of the paddle.
 const MAX_DEFLECT: f32 = PI / 3.0;
@@ -85,7 +93,8 @@ impl Arena {
                 let bottom = PADDLE_Y - 2.0;
                 Path::Arc { c: V2::new(WORLD_W / 2.0, bottom - r), r, a0: PI / 2.0 - sweep / 2.0, a1: PI / 2.0 + sweep / 2.0 }
             }
-            Mode::Circle => Path::Circle { c: V2::new(WORLD_W / 2.0, 29.0), r: 25.0 },
+            // well inside the roof's parapet, leaving open roof between them
+            Mode::Circle => Path::Circle { c: V2::new(WORLD_W / 2.0, 28.0), r: roof::RING },
         };
         Arena { mode, path }
     }
@@ -97,7 +106,8 @@ impl Arena {
     /// Past the paddle for good: off the bottom, or out of the ring on the roof.
     pub fn lost(&self, p: V2) -> bool {
         match self.path {
-            Path::Circle { c, r } => (p - c).len() > r + 4.0,
+            // off the roof: out through a gap in the parapet
+            Path::Circle { c, .. } => (p - c).len() > roof::RIM + 1.0,
             _ => p.y > WORLD_H + 2.0,
         }
     }
@@ -370,7 +380,7 @@ impl Game {
         self.balls.clear();
         self.shots.clear();
         self.stun = 0.0;
-        self.speed = SPEED_START;
+        self.speed = self.speed_start();
         if self.arena.path.wraps() {
             self.paddle.s = 0.0;
         } else {
@@ -378,6 +388,23 @@ impl Game {
         }
         self.paddle.vel = 0.0;
         self.state = State::Serve { wait: 0.0 };
+    }
+
+    /// Half the paddle's length: longer on the roof.
+    pub fn paddle_half(&self) -> f32 {
+        if self.arena.mode == Mode::Circle { ROOF_PADDLE_HALF } else { PADDLE_HALF }
+    }
+
+    fn paddle_speed(&self) -> f32 {
+        if self.arena.mode == Mode::Circle { ROOF_PADDLE_SPEED } else { PADDLE_SPEED }
+    }
+
+    fn speed_start(&self) -> f32 {
+        if self.arena.mode == Mode::Circle { ROOF_SPEED_START } else { SPEED_START }
+    }
+
+    fn speed_max(&self) -> f32 {
+        if self.arena.mode == Mode::Circle { ROOF_SPEED_MAX } else { SPEED_MAX }
     }
 
     /// Breakable bricks still standing.
@@ -409,7 +436,8 @@ impl Game {
     pub fn paddle_segment(&self) -> (V2, V2, V2) {
         let path = &self.arena.path;
         let (c, t) = (path.point(self.paddle.s), path.tangent(self.paddle.s));
-        (c - t * PADDLE_HALF, c + t * PADDLE_HALF, path.normal(self.paddle.s))
+        let half = self.paddle_half();
+        (c - t * half, c + t * half, path.normal(self.paddle.s))
     }
 
     /// Where a served ball sits: on the paddle's face, a little right of centre.
@@ -524,15 +552,15 @@ impl Game {
             0.0
         } else {
             match steer {
-            Steer::Move(k) => k.clamp(-1.0, 1.0) * PADDLE_SPEED,
+            Steer::Move(k) => k.clamp(-1.0, 1.0) * self.paddle_speed(),
             Steer::Toward(p) => chase(path.nearest(p)),
             Steer::Aim(dir) => match path {
                 Path::Circle { c, r } if dir.len() > 0.0 => chase(path.nearest(c + dir.norm() * r)),
-                _ => dir.x.clamp(-1.0, 1.0) * PADDLE_SPEED,
+                _ => dir.x.clamp(-1.0, 1.0) * self.paddle_speed(),
             },
             }
         };
-        self.paddle.s = path.keep(self.paddle.s + self.paddle.vel * STEP, PADDLE_HALF);
+        self.paddle.s = path.keep(self.paddle.s + self.paddle.vel * STEP, self.paddle_half());
         // a paddle moving into a ball pushes it out and bats it
         let (a, b, n) = self.paddle_segment();
         for i in 0..self.balls.len() {
@@ -556,7 +584,7 @@ impl Game {
         let mid = (a + b) * 0.5;
         let t = (b - a).norm();
         let p = self.balls[i].p;
-        let u = ((physics::closest_on_segment(p, a, b) - mid).dot(t) / PADDLE_HALF).clamp(-1.0, 1.0);
+        let u = ((physics::closest_on_segment(p, a, b) - mid).dot(t) / self.paddle_half()).clamp(-1.0, 1.0);
         self.balls[i].v = n.rotate(u * MAX_DEFLECT) * self.speed;
     }
 
@@ -650,6 +678,20 @@ impl Game {
             let (min, max) = g.bounds();
             take(physics::sweep_box(p, d, min, max, BALL_R), Thing::Boss);
         }
+        if let Path::Circle { c, .. } = self.arena.path {
+            // the parapet's merlons: an inner face and two sides each
+            if (p - c).len() + d.len() > roof::RIM - roof::PARAPET - BALL_R - 0.5 {
+                let (r0, r1) = (roof::RIM - roof::PARAPET, roof::RIM + 1.0);
+                let at = |a: f32, r: f32| c + V2::new(a.cos(), a.sin()) * r;
+                for (a0, a1) in roof::merlons() {
+                    let mid = (a0 + a1) / 2.0;
+                    take(physics::sweep_capsule(p, d, at(a0, r0), at(mid, r0), BALL_R), Thing::Wall);
+                    take(physics::sweep_capsule(p, d, at(mid, r0), at(a1, r0), BALL_R), Thing::Wall);
+                    take(physics::sweep_capsule(p, d, at(a0, r0), at(a0, r1), BALL_R), Thing::Wall);
+                    take(physics::sweep_capsule(p, d, at(a1, r0), at(a1, r1), BALL_R), Thing::Wall);
+                }
+            }
+        }
         if let Some(w) = &self.vane {
             let (tail, head) = w.arrow();
             take(physics::sweep_capsule(p, d, tail, head, boss::ARROW_TH + BALL_R), Thing::Arrow);
@@ -681,7 +723,7 @@ impl Game {
 
     fn hit_brick(&mut self, i: usize) {
         let Some(mut brick) = self.bricks[i] else { return };
-        self.speed = (self.speed + SPEED_PER_HIT).min(SPEED_MAX);
+        self.speed = (self.speed + SPEED_PER_HIT).min(self.speed_max());
         if brick.kind == Kind::Gilt {
             brick.flash = 0.12;
             self.bricks[i] = Some(brick);
@@ -804,7 +846,7 @@ impl Game {
                 self.burst(at, V2::new(6.0, 6.0), 20, [240, 185, 45], 24.0);
             }
         }
-        self.speed = (self.speed + SPEED_PER_HIT).min(SPEED_MAX);
+        self.speed = (self.speed + SPEED_PER_HIT).min(self.speed_max());
     }
 
     fn hit_boss(&mut self) {
@@ -830,7 +872,7 @@ impl Game {
                 self.burst(at, boss::HALF, 20, [255, 120, 40], 24.0);
             }
         }
-        self.speed = (self.speed + SPEED_PER_HIT).min(SPEED_MAX);
+        self.speed = (self.speed + SPEED_PER_HIT).min(self.speed_max());
     }
 
     /// A row of stone bricks under the Gargoyle, wherever there is room for them.
@@ -855,16 +897,29 @@ impl Game {
         info!("gargoyle lays a shield of {laid} stones");
     }
 
-    /// How far the camera has pulled back: further on a boss floor, eased during
-    /// the turn to or from one.
-    pub fn zoom(&self) -> f32 {
-        let z = |n: usize| if self.floor_def(n).kind == FloorKind::Balcony { BOSS_ZOOM } else { 1.0 };
+    /// What the camera frames: the middle and size (world units) of the box fitted to
+    /// the screen. On the tower's side, the whole 100x56 world (pulled back a little
+    /// on the balcony); on the roof, just the roof, so it fills the screen however the
+    /// screen is shaped. Eased across during a turn or the climb onto the roof.
+    pub fn frame(&self) -> (V2, V2) {
+        let world = V2::new(WORLD_W, WORLD_H);
+        let side = |n: usize| (world * 0.5, world * (1.0 / if self.floor_def(n).kind == FloorKind::Balcony { BOSS_ZOOM } else { 1.0 }));
+        let (centre, _) = balcony_arc();
+        let roof_centre = match Arena::new(Mode::Circle).path {
+            Path::Circle { c, .. } => c,
+            _ => centre,
+        };
+        let roof = (roof_centre, V2::new(1.0, 1.0) * (2.0 * roof::RIM + 2.0));
+        let blend = |a: (V2, V2), b: (V2, V2), k: f32| (a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k);
+        if self.arena.mode == Mode::Circle {
+            return roof;
+        }
+        if let Some(k) = self.tilt() {
+            return blend(side(self.floor), roof, k);
+        }
         match self.state {
-            State::Clear { t } if self.arena.mode != Mode::Circle => {
-                let k = smoothstep((t - CLEAR_HOLD) / TURN_TIME);
-                z(self.floor) + (z(self.floor + 1) - z(self.floor)) * k
-            }
-            _ => z(self.floor),
+            State::Clear { t } => blend(side(self.floor), side(self.floor + 1), smoothstep((t - CLEAR_HOLD) / TURN_TIME)),
+            _ => side(self.floor),
         }
     }
 
@@ -1010,7 +1065,7 @@ mod tests {
             let mid = (a + b) * 0.5;
             let t = (b - a).norm();
             for (u, want) in [(0.0, 0.0), (1.0, MAX_DEFLECT), (-0.5, -MAX_DEFLECT / 2.0)] {
-                let at = mid + t * (u * PADDLE_HALF) + n * 10.0;
+                let at = mid + t * (u * g.paddle_half()) + n * 10.0;
                 g.balls = vec![Ball { p: at, v: -n * g.speed }];
                 for _ in 0..300 {
                     g.move_ball(0);
@@ -1091,6 +1146,40 @@ mod tests {
         }
         assert!(gusts > 0, "no gusts");
         assert_eq!(g.floor, roof + 1, "the weathercock was never beaten");
+    }
+
+    /// A roof with one ball heading straight out from the middle at angle `a`.
+    fn roof_shot(a: f32) -> Game {
+        let mut g = Game::new(None);
+        let roof = levels::FLOORS.iter().position(|f| f.kind == FloorKind::Roof).unwrap();
+        g.load_floor(roof);
+        g.vane = None;
+        g.bricks.iter_mut().for_each(|b| *b = None);
+        g.state = State::Play;
+        let Path::Circle { c, .. } = g.arena.path else { panic!() };
+        let dir = V2::new(a.cos(), a.sin());
+        g.balls = vec![Ball { p: c + dir * 10.0, v: dir * g.speed }];
+        // the paddle well away, on the far side
+        g.paddle.s = g.arena.path.nearest(c - dir * 20.0);
+        g
+    }
+
+    #[test]
+    fn merlons_bounce_and_gaps_lose() {
+        let step = std::f32::consts::TAU / roof::MERLONS;
+        // at a merlon's middle: bounces back towards the middle
+        let mut g = roof_shot(step * roof::MERLON_SHARE / 2.0);
+        for _ in 0..(1.5 / STEP) as usize {
+            g.move_ball(0);
+        }
+        let Path::Circle { c, .. } = g.arena.path else { panic!() };
+        assert!((g.balls[0].p - c).len() < roof::RIM - roof::PARAPET, "went through a merlon");
+        // at a gap's middle: out and off the roof
+        let mut g = roof_shot(step * (1.0 + roof::MERLON_SHARE) / 2.0);
+        for _ in 0..(1.5 / STEP) as usize {
+            g.move_ball(0);
+        }
+        assert!(g.arena.lost(g.balls[0].p), "didn't go out through the gap");
     }
 
     #[test]

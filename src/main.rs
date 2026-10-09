@@ -70,7 +70,7 @@ fn glyphs_arg() -> bool {
 }
 
 fn make_view(game: &Game, area: Rect, glyphs: bool) -> View {
-    if glyphs { glyph::view(area, game.origin) } else { View::new(area, game.zoom()) }
+    if glyphs { glyph::view(area, game.origin, game.frame()) } else { View::new(area, game.frame()) }
 }
 
 fn draw_world(game: &Game, view: &View, glyphs: bool, buf: &mut Buffer) {

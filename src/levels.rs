@@ -24,7 +24,7 @@ pub struct Floor {
 }
 
 /// The first tower: flat floors 13 bricks across, the balcony partway up, the roof
-/// on top (its bricks a ring round the middle, where the Weathercock stands).
+/// on top (a few groups of bricks round the middle, where the Weathercock roams).
 pub const FLOORS: &[Floor] = &[
     Floor {
         name: "Ground Floor",
@@ -88,18 +88,19 @@ pub const FLOORS: &[Floor] = &[
     },
     Floor {
         name: "The Weathercock's Roof",
+        // a few small groups, leaving the roof open for the Weathercock to roam
         rows: &[
-            "..ccc..",
-            ".cbbbc.",
-            "cb...bc",
-            "b.....b",
-            "y.....y",
-            "S.....S",
-            "y.....y",
-            "b.....b",
-            "cb...bc",
-            ".cbbbc.",
-            "..ccc..",
+            ".......",
+            "..cyc..",
+            ".......",
+            ".......",
+            ".b...b.",
+            ".S...S.",
+            ".b...b.",
+            ".......",
+            ".......",
+            "..cyc..",
+            ".......",
         ],
         kind: FloorKind::Roof,
     },

@@ -8,7 +8,7 @@
 //! view is nudged so the brick grid lands on cell edges. Same world, same physics as
 //! pixel mode; only the drawing differs.
 
-use crate::game::{self, Game, Kind, Mode, BALL_R, BRICK_H, LEDGE, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, WORLD_H, WORLD_W};
+use crate::game::{self, Game, Kind, Mode, BALL_R, BRICK_H, LEDGE, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF};
 use crate::boss::{self, Gargoyle, Weathercock};
 use crate::roof::{self, RoofView, Seen};
 use crate::game::{Balcony, State};
@@ -43,15 +43,15 @@ fn scale_for(k: u32) -> f32 {
     2.0 * k as f32 / BRICK_H
 }
 
-/// The largest size that fits, aligned so `align` (the brick grid's corner) sits on
-/// a cell corner.
-pub fn view(area: Rect, align: V2) -> View {
+/// The largest size at which the camera's box (`centre`, `size`) fits, aligned so
+/// `align` (the brick grid's corner) sits on a cell corner.
+pub fn view(area: Rect, align: V2, (centre, size): (V2, V2)) -> View {
     let (w, h) = (area.width as f32, area.height as f32 * 2.0);
-    let fits = |k: u32| WORLD_W * scale_for(k) <= w && WORLD_H * scale_for(k) <= h;
+    let fits = |k: u32| size.x * scale_for(k) <= w && size.y * scale_for(k) <= h;
     let k = (1..8).take_while(|&k| fits(k)).last().unwrap_or(1);
     let s = scale_for(k);
-    let mut ox = (w - WORLD_W * s) / 2.0;
-    let mut oy = (h - WORLD_H * s) / 2.0;
+    let mut ox = w / 2.0 - centre.x * s;
+    let mut oy = h / 2.0 - centre.y * s;
     let ax = align.x * s + ox;
     ox += ax.round() - ax;
     let ay = align.y * s + oy;
@@ -320,7 +320,7 @@ fn roof_part(game: &Game, roof: &RoofView, q: V2) -> Part {
     let off = q - roof.centre;
     let d = off.len();
     if d > roof::RIM - roof::PARAPET {
-        let merlon = (off.y.atan2(off.x) / (std::f32::consts::TAU / 24.0)).rem_euclid(1.0) < 0.55;
+        let merlon = roof::merlon_at(off.y.atan2(off.x));
         return if merlon { Part::Merlon } else { Part::Crenel };
     }
     if let Some(b) = roof.brick(game, q) {

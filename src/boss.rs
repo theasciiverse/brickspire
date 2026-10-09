@@ -5,8 +5,9 @@
 //! field clutters up as the fight goes on. It speeds up as it is hurt.
 //!
 //! The first tower's roof boss is the Weathercock: a giant iron weathervane in the
-//! middle of the roof. Its arrow swings slowly round and bats the ball away (it can't
-//! be hurt); the rooster at its hub is the target. Now and then it blows a gust along
+//! middle of the roof, roaming round it in a slow figure. Its arrow swings slowly
+//! round and bats the ball away (it can't be hurt); the rooster at its hub is the
+//! target. Now and then it blows a gust along
 //! its arrow that bends the ball's path in flight, and every few hits it spins up and
 //! sweeps the arrow round fast.
 
@@ -144,6 +145,8 @@ const SPIN_EVERY: u8 = 4;
 const SPIN_TIME: f32 = 2.5;
 const SPIN_RATE: f32 = 3.2;
 const DRIFT_RATE: f32 = 0.3;
+/// How far it roams from the middle of the roof, across and down.
+const ROAM: V2 = V2::new(6.5, 5.0);
 /// A gust: how long, how hard it pushes (world units per second squared), how often.
 const GUST_TIME: f32 = 1.6;
 pub const GUST_PUSH: f32 = 55.0;
@@ -153,7 +156,11 @@ pub const GUST_WARN: f32 = 0.8;
 
 #[derive(Clone, Debug)]
 pub struct Weathercock {
+    /// Where it stands now; it roams round `home`, the middle of the roof.
     pub centre: V2,
+    home: V2,
+    /// How far along its roaming figure it is.
+    roam: f32,
     /// Which way the arrow points (radians, screen angle).
     pub angle: f32,
     /// How fast it is turning now (radians per second).
@@ -173,6 +180,8 @@ impl Weathercock {
     pub fn new(centre: V2) -> Weathercock {
         Weathercock {
             centre,
+            home: centre,
+            roam: 0.0,
             angle: -std::f32::consts::FRAC_PI_2,
             turn: DRIFT_RATE,
             hp: VANE_HP,
@@ -219,6 +228,12 @@ impl Weathercock {
         // it holds still while it blows
         let turning = if self.gust > 0.0 && self.spinning <= 0.0 { 0.0 } else { self.turn };
         self.angle = (self.angle + turning * dt).rem_euclid(std::f32::consts::TAU);
+        // it glides round the middle of the roof in a slow figure, faster when hurt
+        // (and stays put while it blows)
+        if self.gust <= 0.0 {
+            self.roam += dt * 0.35 * self.rage();
+        }
+        self.centre = self.home + V2::new(ROAM.x * self.roam.sin(), ROAM.y * (self.roam * 1.6).sin());
         if !live {
             return;
         }

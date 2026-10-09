@@ -197,20 +197,27 @@ cargo test --release
 ## Status
 
 Build step 4 done (2026-10-09): circle mode on the roof and the first tower boss. The
-first tower is now Ground Floor, The Spire, Chequers, Twin Lanterns, the Gargoyle's
+first tower is Ground Floor, The Spire, Chequers, Twin Lanterns, the Gargoyle's
 Balcony, and the Weathercock's Roof; after the roof the climb starts again (next tower:
 step 5). Beating the Gargoyle doesn't turn the tower: the camera rises and tilts to look
-straight down (2.6 s). The roof shows as an ellipse that opens into a circle, the tower's
-side below it foreshortens away with its faces' tops following the cylinder's curve,
-and the sky gives way to the ground far below. The roof is flagstones in rings, a
-crenellated parapet (24 merlons), the paddle's ring (radius 25) and a ring of bricks.
-The Weathercock (16 hits) stands in the middle: its arrow turns slowly and bats the ball
-away (it can't be hurt), the rooster on its hub is the target; every 6 s (faster as it
-is hurt) it shudders, then blows a 1.6 s gust along the arrow that bends the ball's path
-in flight; every fourth hit it spins up and sweeps round fast for 2.5 s. Beating it
-climbs the tower: a 5000 bonus. Particles have no gravity looking straight down.
-Autoplay beats it in 60 to 120 s without losing a life, but autoplay tracks the ball
-perfectly round the ring; balance is a first guess, as with the Gargoyle.
+straight down (2.6 s); the roof opens from an ellipse into a circle, the tower's side
+foreshortens away with its faces' tops following the cylinder's curve, the sky gives way
+to the ground far below.
+
+The roof, reworked the same day after David played it ("too hard: fewer bricks, a boss
+that moves, the circle needn't be the only play area"): the roof is bigger (radius 33), and on the
+roof the camera frames just the roof rather than the 100x56 world, so it fills the
+screen's height whatever the terminal's shape (David's cells are taller than 1:2, which
+had left it small); the framing eases across during the climb. The paddle's ring (radius 26) sits
+inside the parapet with open roof between: a ball that gets past the paddle bounces off
+the 16 merlons (65% of the rim) back into play and is lost only through the gaps. On the
+roof the paddle is longer (18) and faster (188, the same turning speed round the bigger ring) and the ball slower (40 to 66), since
+the paddle may have to go half way round while the ball crosses (a bigger ring alone
+wouldn't help: both distances scale together). Twelve bricks in small groups. The
+Weathercock (16 hits) roams the middle in a slow figure (faster when hurt, still while
+it blows); its arrow turns and bats the ball (can't be hurt), the rooster is the target;
+it shudders, then gusts along the arrow, bending the ball's path; every fourth hit it
+spins up. Beating it climbs the tower: a 5000 bonus.
 
 Step 3 (same day): arc mode and the Gargoyle on floor 5. The balcony is part of the
 floor's face, the camera pulls back a little (pixels), the Gargoyle (12 hits) spits
