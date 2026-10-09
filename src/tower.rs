@@ -13,7 +13,7 @@
 //! Turning to the next floor is a tween of the camera, in floors, from `n` to `n + 1`.
 
 use crate::game::{self, Game, Kind, Mode, BRICK_H, BRICK_W, WORLD_H, WORLD_W};
-use crate::levels;
+use crate::levels::{self, FloorKind};
 use crate::physics::V2;
 use std::f32::consts::FRAC_PI_4;
 
@@ -22,7 +22,7 @@ pub const STEP_H: f32 = WORLD_H / 4.0;
 /// Half the front face's width on screen (pilaster to pilaster, so x 9 to 91), drawn
 /// flat; and half the tower's silhouette, where the curve ends.
 const FLAT: f32 = 41.0;
-const EDGE: f32 = 48.0;
+pub const EDGE: f32 = 48.0;
 
 /// What lies under a screen point on the tower.
 #[derive(Clone, Copy, Debug)]
@@ -115,7 +115,7 @@ impl Faces {
                         }
                     }
                 }
-                Grid { n, boss: def.boss, origin: game::line_origin(cols), cols, rows, cells }
+                Grid { n, boss: def.kind == FloorKind::Balcony, origin: game::line_origin(cols), cols, rows, cells }
             })
             .collect();
         Faces { floor, grids }

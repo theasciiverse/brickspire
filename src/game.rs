@@ -3,8 +3,8 @@
 //! A fixed step of `STEP` seconds. The paddle moves first, then each ball is swept
 //! along its motion, bouncing off whatever it touches first, until the step is used up.
 
-use crate::boss::{self, Gargoyle, Hurt, Shot};
-use crate::levels::{self, Floor};
+use crate::boss::{self, Gargoyle, Hurt, Shot, Weathercock};
+use crate::levels::{self, Floor, FloorKind};
 use crate::physics::{self, Hit, Path, V2};
 use log::info;
 use std::f32::consts::PI;
@@ -27,6 +27,11 @@ pub const LEDGE: f32 = 54.0;
 /// After a floor is cleared: a moment to see it, then the tower turns to the next.
 pub const CLEAR_HOLD: f32 = 0.6;
 pub const TURN_TIME: f32 = 1.8;
+/// Climbing onto the roof: the camera rises and tilts to look straight down.
+pub const TILT_TIME: f32 = 2.6;
+/// How long the roof holds, beaten, before the next tower.
+const ROOF_HOLD: f32 = 3.5;
+const TOWER_BONUS: u32 = 5000;
 pub const PADDLE_Y: f32 = 52.0;
 /// Half the paddle's length, and half its thickness.
 pub const PADDLE_HALF: f32 = 7.0;
@@ -216,6 +221,8 @@ pub struct Game {
     /// The mini-boss on a boss floor (gone once beaten), its fireballs, and how long
     /// the paddle has left stunned by one.
     pub boss: Option<Gargoyle>,
+    /// The roof's boss, likewise.
+    pub vane: Option<Weathercock>,
     pub boss_floor: bool,
     pub shots: Vec<Shot>,
     pub stun: f32,
@@ -231,6 +238,9 @@ enum Thing {
     Brick(usize),
     Paddle,
     Boss,
+    /// The Weathercock's arrow (bounces, can't be hurt) and its rooster (the target).
+    Arrow,
+    Rooster,
 }
 
 pub fn brick_rgb(kind: Kind) -> [u8; 3] {
@@ -304,6 +314,7 @@ impl Game {
             time: 0.0,
             particles: Vec::new(),
             boss: None,
+            vane: None,
             boss_floor: false,
             shots: Vec::new(),
             stun: 0.0,
@@ -314,13 +325,17 @@ impl Game {
         g
     }
 
-    fn floor_def(&self, n: usize) -> &'static Floor {
+    pub fn floor_def(&self, n: usize) -> &'static Floor {
         if self.forced == Some(Mode::Circle) { &levels::ROOF_TEST } else { &levels::FLOORS[n % levels::FLOORS.len()] }
     }
 
     /// The paddle's path on floor `n`: the balcony's arc on a boss floor.
-    fn floor_mode(&self, n: usize) -> Mode {
-        self.forced.unwrap_or(if self.floor_def(n).boss { Mode::Arc } else { Mode::Line })
+    pub fn floor_mode(&self, n: usize) -> Mode {
+        self.forced.unwrap_or(match self.floor_def(n).kind {
+            FloorKind::Plain => Mode::Line,
+            FloorKind::Balcony => Mode::Arc,
+            FloorKind::Roof => Mode::Circle,
+        })
     }
 
     pub fn load_floor(&mut self, n: usize) {
@@ -328,8 +343,12 @@ impl Game {
         self.floor = n;
         self.floor_name = def.name;
         self.arena = Arena::new(self.floor_mode(n));
-        self.boss_floor = def.boss;
-        self.boss = def.boss.then(Gargoyle::new);
+        self.boss_floor = def.kind != FloorKind::Plain;
+        self.boss = (def.kind == FloorKind::Balcony).then(Gargoyle::new);
+        self.vane = match (def.kind, self.arena.path) {
+            (FloorKind::Roof, Path::Circle { c, .. }) => Some(Weathercock::new(c)),
+            _ => None,
+        };
         let (cols, rows, cells) = parse(def);
         (self.cols, self.rows) = (cols, rows);
         let (w, h) = (self.cols as f32 * BRICK_W, self.rows as f32 * BRICK_H);
@@ -411,8 +430,9 @@ impl Game {
         for b in self.bricks.iter_mut().flatten() {
             b.flash = (b.flash - STEP).max(0.0);
         }
+        let gravity = if self.arena.mode == Mode::Circle { 0.0 } else { GRAVITY };
         self.particles.retain_mut(|p| {
-            p.v.y += GRAVITY * STEP;
+            p.v.y += gravity * STEP;
             p.p += p.v * STEP;
             p.life -= STEP;
             p.life > 0.0
@@ -438,12 +458,12 @@ impl Game {
                 // the paddle glides back to the middle while the tower turns
                 let mid = self.arena.path.len() / 2.0;
                 self.paddle.s += (mid - self.paddle.s) * (STEP * 3.0).min(1.0);
-                if t >= CLEAR_HOLD + TURN_TIME {
-                    info!("tower turned to floor {}", self.floor + 2);
+                if t >= self.clear_time() {
+                    info!("on to floor {}", self.floor + 2);
                     self.load_floor(self.floor + 1);
                 } else {
                     if t > CLEAR_HOLD && t - STEP <= CLEAR_HOLD {
-                        info!("tower turning");
+                        info!("{}", if self.roof_next() { "camera climbing onto the roof" } else { "tower turning" });
                     }
                     self.state = State::Clear { t };
                 }
@@ -476,8 +496,12 @@ impl Game {
             info!("life lost: {} left", self.lives);
             self.shots.clear();
             self.state = State::Lost { t: 1.2 };
-        } else if self.boss_floor && self.boss.is_none() {
+        } else if self.boss_floor && self.boss.is_none() && self.vane.is_none() {
             info!("floor {} clear, boss beaten: score {}", self.floor + 1, self.score);
+            if self.arena.mode == Mode::Circle {
+                info!("tower climbed: bonus {TOWER_BONUS}");
+                self.score += TOWER_BONUS;
+            }
             self.clear_floor(0.0);
         } else if !self.boss_floor && self.left() == 0 {
             info!("floor {} clear: score {}", self.floor + 1, self.score);
@@ -537,6 +561,11 @@ impl Game {
     }
 
     fn move_ball(&mut self, i: usize) {
+        // the Weathercock's gusts bend the ball's path (its speed stays the same)
+        if let Some(wind) = self.vane.as_ref().and_then(|w| w.wind()) {
+            let v = self.balls[i].v + wind * STEP;
+            self.balls[i].v = v.norm() * self.speed;
+        }
         let mut left = 1.0f32;
         for _ in 0..8 {
             if left <= 0.0 {
@@ -560,6 +589,11 @@ impl Game {
                 Thing::Boss => {
                     self.balls[i].v = ball.v.reflect(hit.n);
                     self.hit_boss();
+                }
+                Thing::Arrow => self.balls[i].v = ball.v.reflect(hit.n),
+                Thing::Rooster => {
+                    self.balls[i].v = ball.v.reflect(hit.n);
+                    self.hit_vane();
                 }
             }
             self.balls[i].v = self.tidy(self.balls[i].v);
@@ -615,6 +649,11 @@ impl Game {
         if let Some(g) = &self.boss {
             let (min, max) = g.bounds();
             take(physics::sweep_box(p, d, min, max, BALL_R), Thing::Boss);
+        }
+        if let Some(w) = &self.vane {
+            let (tail, head) = w.arrow();
+            take(physics::sweep_capsule(p, d, tail, head, boss::ARROW_TH + BALL_R), Thing::Arrow);
+            take(physics::sweep_capsule(p, d, w.centre, w.centre, boss::ROOSTER_R + BALL_R), Thing::Rooster);
         }
         let (a, b, n) = self.paddle_segment();
         let h = physics::sweep_capsule(p, d, a, b, PADDLE_TH + BALL_R).filter(|h| h.n.dot(n) > -0.3);
@@ -684,6 +723,7 @@ impl Game {
     /// The boss flies and spits; its fireballs fly and may stun the paddle; and if
     /// it flew into a ball, the ball is pushed back out.
     fn update_boss(&mut self) {
+        self.update_vane();
         let Some(mut g) = self.boss.take() else { return };
         let live = self.state == State::Play;
         let target = self.arena.path.point(self.paddle.s);
@@ -714,6 +754,57 @@ impl Game {
             self.stun = STUN;
             self.burst(at, V2::new(2.0, 1.0), 10, [255, 150, 40], 22.0);
         }
+    }
+
+    /// The Weathercock turns and blows; a ball its arrow or rooster swung into is
+    /// pushed back out (and batted, if it was heading in); gusts streak the roof.
+    fn update_vane(&mut self) {
+        let Some(mut w) = self.vane.take() else { return };
+        w.update(STEP, self.state == State::Play);
+        let (tail, head) = w.arrow();
+        for b in self.balls.iter_mut() {
+            for (a, z, reach) in [(tail, head, boss::ARROW_TH + BALL_R), (w.centre, w.centre, boss::ROOSTER_R + BALL_R)] {
+                let q = physics::closest_on_segment(b.p, a, z);
+                let off = b.p - q;
+                if off.len() < reach && off.len() > 0.0 {
+                    let n = off.norm();
+                    b.p = q + n * (reach + 1e-3);
+                    if b.v.dot(n) < 0.0 {
+                        b.v = b.v.reflect(n);
+                    }
+                }
+            }
+        }
+        if let (Some(wind), Path::Circle { c, r }) = (w.wind(), self.arena.path) {
+            let a = self.rand() * 2.0 * PI;
+            let p = c + V2::new(a.cos(), a.sin()) * (self.rand().sqrt() * r);
+            let life = 0.3 + self.rand() * 0.3;
+            self.particles.push(Particle { p, v: wind * 0.9, life, rgb: [200, 215, 235] });
+        }
+        self.vane = Some(w);
+    }
+
+    fn hit_vane(&mut self) {
+        let Some(w) = self.vane.as_mut() else { return };
+        let hurt = w.hit();
+        let (at, hp) = (w.centre, w.hp);
+        match hurt {
+            Hurt::Shrugged => return,
+            Hurt::Hurt | Hurt::Shield => {
+                info!("weathercock hit: {hp} left");
+                self.score += 150;
+                self.burst(at, V2::new(3.0, 3.0), 8, [235, 70, 50], 16.0);
+            }
+            Hurt::Dead => {
+                info!("weathercock beaten");
+                self.score += 4000;
+                self.vane = None;
+                self.burst(at, V2::new(16.0, 16.0), 50, [90, 90, 100], 30.0);
+                self.burst(at, V2::new(4.0, 4.0), 25, [235, 70, 50], 26.0);
+                self.burst(at, V2::new(6.0, 6.0), 20, [240, 185, 45], 24.0);
+            }
+        }
+        self.speed = (self.speed + SPEED_PER_HIT).min(SPEED_MAX);
     }
 
     fn hit_boss(&mut self) {
@@ -767,7 +858,7 @@ impl Game {
     /// How far the camera has pulled back: further on a boss floor, eased during
     /// the turn to or from one.
     pub fn zoom(&self) -> f32 {
-        let z = |n: usize| if self.floor_def(n).boss { BOSS_ZOOM } else { 1.0 };
+        let z = |n: usize| if self.floor_def(n).kind == FloorKind::Balcony { BOSS_ZOOM } else { 1.0 };
         match self.state {
             State::Clear { t } if self.arena.mode != Mode::Circle => {
                 let k = smoothstep((t - CLEAR_HOLD) / TURN_TIME);
@@ -790,6 +881,7 @@ impl Game {
             }
         }
         self.boss = None;
+        self.vane = None;
         if self.arena.mode != Mode::Circle {
             self.clear_floor(CLEAR_HOLD);
         } else {
@@ -809,10 +901,38 @@ impl Game {
     /// the turn to the next one.
     pub fn camera(&self) -> f32 {
         let turn = match self.state {
-            State::Clear { t } if self.arena.mode != Mode::Circle => smoothstep((t - CLEAR_HOLD) / TURN_TIME),
+            State::Clear { t } if self.arena.mode != Mode::Circle && !self.roof_next() => smoothstep((t - CLEAR_HOLD) / TURN_TIME),
             _ => 0.0,
         };
         self.floor as f32 + turn
+    }
+
+    /// Is the next floor the roof (and this one not)?
+    pub fn roof_next(&self) -> bool {
+        self.arena.mode != Mode::Circle && self.floor_mode(self.floor + 1) == Mode::Circle
+    }
+
+    /// How far the camera has tilted from looking at the tower's side (0) to looking
+    /// straight down on its roof (1); `None` when it isn't anywhere near the roof.
+    pub fn tilt(&self) -> Option<f32> {
+        if self.arena.mode == Mode::Circle {
+            return Some(1.0);
+        }
+        match self.state {
+            State::Clear { t } if self.roof_next() => Some(smoothstep((t - CLEAR_HOLD) / TILT_TIME)),
+            _ => None,
+        }
+    }
+
+    /// How long a cleared floor waits before the next one loads.
+    fn clear_time(&self) -> f32 {
+        if self.arena.mode == Mode::Circle {
+            ROOF_HOLD
+        } else if self.roof_next() {
+            CLEAR_HOLD + TILT_TIME
+        } else {
+            CLEAR_HOLD + TURN_TIME
+        }
     }
 
     /// A served ball is drawn on the paddle before it exists.
@@ -920,7 +1040,8 @@ mod tests {
     #[test]
     fn floors_parse() {
         for (i, f) in levels::FLOORS.iter().enumerate() {
-            assert!(f.rows.iter().all(|r| r.len() == 13), "floor {i} is not 13 wide");
+            let width = if f.kind == FloorKind::Roof { 7 } else { 13 };
+            assert!(f.rows.iter().all(|r| r.len() == width), "floor {i} is not {width} wide");
             assert!(f.rows.iter().flat_map(|r| r.chars()).all(|c| ".wocgrbmySG".contains(c)), "floor {i} has a stray character");
         }
     }
@@ -928,7 +1049,7 @@ mod tests {
     #[test]
     fn the_balcony_floor_is_an_arc_and_the_gargoyle_can_be_beaten() {
         let mut g = Game::new(None);
-        let boss = levels::FLOORS.iter().position(|f| f.boss).expect("a boss floor");
+        let boss = levels::FLOORS.iter().position(|f| f.kind == FloorKind::Balcony).expect("a boss floor");
         g.load_floor(boss);
         assert_eq!(g.arena.mode, Mode::Arc);
         assert!(g.boss.is_some());
@@ -943,7 +1064,33 @@ mod tests {
             }
         }
         assert_eq!(g.floor, boss + 1, "the gargoyle was never beaten");
-        assert_eq!(g.arena.mode, Mode::Line);
+        // up onto the roof
+        assert_eq!(g.arena.mode, Mode::Circle);
+        assert!(g.vane.is_some());
+    }
+
+    #[test]
+    fn the_roof_is_a_ring_and_the_weathercock_can_be_beaten() {
+        let mut g = Game::new(None);
+        let roof = levels::FLOORS.iter().position(|f| f.kind == FloorKind::Roof).expect("a roof");
+        g.load_floor(roof);
+        assert_eq!(g.arena.mode, Mode::Circle);
+        g.lives = 99;
+        let mut pilot = Pilot::new();
+        let mut gusts = 0;
+        for _ in 0..(400.0 / STEP) as usize {
+            let s = pilot.steer(&g);
+            let was = g.vane.as_ref().is_some_and(|w| w.wind().is_some());
+            g.step(s, true);
+            if !was && g.vane.as_ref().is_some_and(|w| w.wind().is_some()) {
+                gusts += 1;
+            }
+            if g.floor != roof {
+                break;
+            }
+        }
+        assert!(gusts > 0, "no gusts");
+        assert_eq!(g.floor, roof + 1, "the weathercock was never beaten");
     }
 
     #[test]

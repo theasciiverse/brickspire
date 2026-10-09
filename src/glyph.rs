@@ -9,7 +9,8 @@
 //! pixel mode; only the drawing differs.
 
 use crate::game::{self, Game, Kind, Mode, BALL_R, BRICK_H, LEDGE, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, WORLD_H, WORLD_W};
-use crate::boss::{self, Gargoyle};
+use crate::boss::{self, Gargoyle, Weathercock};
+use crate::roof::{self, RoofView, Seen};
 use crate::game::{Balcony, State};
 use crate::physics::{Path, V2};
 use crate::tower::{self, BrickHere, Faces, Sample};
@@ -29,6 +30,10 @@ const RAIL: Color = Color::Rgb(70, 90, 125);
 const FIRE: Color = Color::Rgb(255, 140, 40);
 const GARGOYLE_STONE: Color = Color::Rgb(175, 170, 185);
 const GARGOYLE_WING: Color = Color::Rgb(120, 112, 140);
+const MERLON: Color = Color::Rgb(175, 168, 152);
+const CRENEL: Color = Color::Rgb(52, 49, 50);
+const ROOF_FLOOR: Color = Color::Rgb(34, 33, 42);
+const PLINTH: Color = Color::Rgb(48, 50, 60);
 const PIPE_BG: Color = Color::Rgb(38, 46, 64);
 const LEDGE_STONE: Color = Color::Rgb(175, 165, 145);
 const LEDGE_SHADOW: Color = Color::Rgb(55, 50, 56);
@@ -189,6 +194,62 @@ fn line(t: V2, heavy: bool) -> &'static str {
     }
 }
 
+/// A ring of pipe round `p`, `r` world units in radius, at its true size in cells.
+/// Returns the cells it covers (left, top, width, height).
+fn pipe_ring(cv: &mut Canvas, p: V2, r: f32, fg: Color) -> (i32, i32, i32, i32) {
+    let cols = ((2.0 * r * cv.view.s).round() as i32).max(2);
+    let rows = ((r * cv.view.s).round() as i32).max(1);
+    let c0 = (p.x * cv.view.s + cv.view.ox - cols as f32 / 2.0).round() as i32;
+    let r0 = ((p.y * cv.view.s + cv.view.oy) / 2.0 - rows as f32 / 2.0).round() as i32;
+    for y in 0..rows {
+        for x in 0..cols {
+            let (left, right, top, bottom) = (x == 0, x == cols - 1, y == 0, y == rows - 1);
+            let sym = if rows == 1 {
+                if left { "(" } else if right { ")" } else { "─" }
+            } else {
+                match (left, right, top, bottom) {
+                    (true, _, true, _) => "╭",
+                    (_, true, true, _) => "╮",
+                    (true, _, _, true) => "╰",
+                    (_, true, _, true) => "╯",
+                    (true, _, _, _) | (_, true, _, _) => "│",
+                    (_, _, true, _) | (_, _, _, true) => "─",
+                    _ => " ",
+                }
+            };
+            cv.put(c0 + x, r0 + y, sym, fg, None);
+        }
+    }
+    (c0, r0, cols, rows)
+}
+
+/// The Weathercock: its arrow a heavy iron line with a brass head pointing its way
+/// and a fletched tail, the rooster on the hub a verdigris ring with a red comb. It
+/// shudders before a gust and blinks white after a hit.
+fn draw_weathercock(cv: &mut Canvas, w: &Weathercock) {
+    let blink = w.hurt > 0.0 && (w.hurt * 12.0) as i32 % 2 == 0;
+    let shake = if w.warning() { V2::new((w.t * 70.0).sin() * 0.6, 0.0) } else { V2::default() };
+    let (tail, head) = w.arrow();
+    let (tail, head) = (tail + shake, head + shake);
+    let iron = if blink { Color::Rgb(255, 255, 255) } else { Color::Rgb(150, 152, 168) };
+    let cells = walk(cv, (0..=64).map(|i| tail + (head - tail) * (i as f32 / 64.0)));
+    for (c, r, sym) in strokes(&cells, true, false) {
+        cv.put(c, r, sym, iron, None);
+    }
+    // the head: an arrow pointing the way the vane points (screen octant)
+    let d = w.dir();
+    let octant = ((d.y.atan2(d.x) / (std::f32::consts::TAU / 8.0)).round() as i32).rem_euclid(8) as usize;
+    let (hc, hr) = cv.cell(head);
+    cv.put(hc, hr, ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"][octant], if blink { iron } else { BRASS }, None);
+    let (tc, tr) = cv.cell(tail);
+    cv.put(tc, tr, "≡", iron, None);
+    let fg = if blink { Color::Rgb(255, 255, 255) } else { Color::Rgb(110, 200, 165) };
+    let (c0, r0, cols, _) = pipe_ring(cv, w.centre + shake, boss::ROOSTER_R, fg);
+    if cols >= 3 {
+        cv.put(c0 + cols / 2, r0, "▲", if blink { fg } else { Color::Rgb(225, 50, 40) }, None);
+    }
+}
+
 /// The Gargoyle, two rows tall (smallest size) or four, wings up and wings down.
 /// Spaces are see-through; columns `HEAD` are head and body, the rest wings.
 const GARGOYLE_SMALL: [[&str; 2]; 2] = [["╲╲(●▾●)╱╱", "  ╰┴─┴╯  "], ["─╮(●▾●)╭─", "╱╱╰┴─┴╯╲╲"]];
@@ -245,6 +306,27 @@ enum Part {
     Walkway,
     Rail(V2),
     Shadow,
+    /// The roof, seen from above: merlons and the gaps between them round the rim,
+    /// flagstones, the Weathercock's iron plinth; and the parapet's outer wall.
+    Merlon,
+    Crenel,
+    RoofFloor,
+    Plinth,
+    ParapetWall,
+}
+
+/// What part of the roof lies at roof point `q`.
+fn roof_part(game: &Game, roof: &RoofView, q: V2) -> Part {
+    let off = q - roof.centre;
+    let d = off.len();
+    if d > roof::RIM - roof::PARAPET {
+        let merlon = (off.y.atan2(off.x) / (std::f32::consts::TAU / 24.0)).rem_euclid(1.0) < 0.55;
+        return if merlon { Part::Merlon } else { Part::Crenel };
+    }
+    if let Some(b) = roof.brick(game, q) {
+        return Part::Brick(b);
+    }
+    if d < 5.0 { Part::Plinth } else { Part::RoofFloor }
 }
 
 fn lit(c: Color, k: f32) -> Color {
@@ -259,12 +341,23 @@ fn lit(c: Color, k: f32) -> Color {
 fn draw_tower(cv: &mut Canvas, game: &Game) {
     let cam = game.camera();
     let faces = Faces::new(game);
+    let roof = RoofView::new(game);
+    // near the roof, the camera tilts: each cell sees roof, parapet, side or beyond
+    let tilt = game.tilt().zip(roof.as_ref()).map(|(k, rv)| roof::tilt(k, rv.centre));
+    let ground_y = roof::ground_below(game.floor);
     let (w, h) = (cv.view.area.width as i32, cv.view.area.height as i32);
-    let samples: Vec<Option<Sample>> = (0..h)
+    let seen: Vec<Seen> = (0..h)
         .flat_map(|r| (0..w).map(move |c| (c, r)))
         .map(|(c, r)| {
             let p = cv.centre(c, r);
-            tower::sample(p.x, p.y, cam)
+            tilt.map_or(Seen::Side(p), |t| t.seen(p, ground_y))
+        })
+        .collect();
+    let samples: Vec<Option<Sample>> = seen
+        .iter()
+        .map(|v| match *v {
+            Seen::Side(sp) => tower::sample(sp.x, sp.y, cam),
+            _ => None,
         })
         .collect();
     let parts: Vec<Part> = samples
@@ -288,6 +381,12 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
                 Balcony::Shadow => Part::Shadow,
             }
         })
+        .zip(seen.iter())
+        .map(|(part, v)| match (*v, &roof) {
+            (Seen::Roof(q), Some(rv)) => roof_part(game, rv, q),
+            (Seen::Parapet(_), _) => Part::ParapetWall,
+            _ => part,
+        })
         .collect();
     let at = |c: i32, r: i32| if c < 0 || r < 0 || c >= w || r >= h { Part::Sky } else { parts[(r * w + c) as usize] };
     let same = |a: Part, b: Part| match (a, b) {
@@ -296,13 +395,19 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
     };
     for r in 0..h {
         for c in 0..w {
-            let Some(s) = samples[(r * w + c) as usize] else { continue };
-            let k = s.light;
-            let wall = lit(if s.n < 0 { BALCONY } else { FIELD }, k);
+            let here = samples[(r * w + c) as usize];
+            let k = here.map_or(1.0, |s| s.light);
+            let wall = lit(if here.is_some_and(|s| s.n < 0) { BALCONY } else { FIELD }, k);
             match at(c, r) {
                 Part::Sky => {}
+                Part::Merlon => cv.put(c, r, "▒", MERLON, Some(CRENEL)),
+                Part::Crenel => cv.bg(c, r, CRENEL),
+                Part::RoofFloor => cv.bg(c, r, ROOF_FLOOR),
+                Part::Plinth => cv.bg(c, r, PLINTH),
+                Part::ParapetWall => cv.put(c, r, "░", MERLON, Some(CRENEL)),
                 Part::Wall => cv.bg(c, r, wall),
                 Part::Lintel => {
+                    let Some(s) = here else { continue };
                     let left = samples.get((r * w + c - 1) as usize).copied().flatten();
                     let band = at(c - 1, r) == Part::Lintel && left.is_some_and(|l| (l.u / 9.0).floor() != (s.u / 9.0).floor());
                     let below_edge = at(c, r + 1) == Part::Pilaster && (at(c - 1, r + 1) != Part::Pilaster || at(c + 1, r + 1) != Part::Pilaster);
@@ -319,6 +424,7 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
                     // a column is a pipe: lines down its edges, steel between
                     let edge = at(c - 1, r) != Part::Pilaster || at(c + 1, r) != Part::Pilaster;
                     if edge {
+                        let Some(s) = here else { continue };
                         let above = if r > 0 { samples[((r - 1) * w + c) as usize] } else { None };
                         let band = at(c, r - 1) == Part::Pilaster && above.is_some_and(|a| (a.v / 9.0).floor() != (s.v / 9.0).floor());
                         let (sym, fg) = if band { ("╫", BRASS) } else { ("║", STEEL) };
@@ -386,11 +492,21 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     let mut cv = Canvas { buf, view };
     let (w, h) = (area.width as i32, area.height as i32);
 
-    // sky with stars fixed to the screen, twinkling
+    // sky with stars fixed to the screen, twinkling; or, once the camera looks down
+    // from the roof, the ground far below
+    let looking_down = game.tilt().is_some_and(|k| k > 0.6);
     for r in 0..h {
         for c in 0..w {
             let hv = hash(c as u32, r as u32);
-            if hv % 53 == 0 {
+            if looking_down {
+                let field = hash(c as u32 / 4, r as u32 / 2) & 0xff;
+                let bg = Color::Rgb(10 + (field / 24) as u8, 18 + (field / 30) as u8, 14);
+                if hv % 29 == 0 {
+                    cv.put(c, r, ".", Color::Rgb(32, 46, 30), Some(bg));
+                } else {
+                    cv.bg(c, r, bg);
+                }
+            } else if hv % 53 == 0 {
                 let tw = 0.5 + 0.5 * (game.time * (0.6 + (hv >> 22) as f32 / 1024.0 * 1.5) + hv as f32).sin();
                 let sym = ["·", ".", "+", "*"][(hv >> 6) as usize % 4];
                 let k = 0.3 + 0.7 * tw;
@@ -401,103 +517,13 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         }
     }
 
-    if game.arena.mode != Mode::Circle {
-        draw_tower(&mut cv, game);
-        // the paddle's path along the balcony, once the tower has stopped turning
-        if game.arena.mode == Mode::Arc && !matches!(game.state, State::Clear { .. }) {
-            trace(&mut cv, &game.arena.path, RAIL);
-        }
-    } else {
-        // the field: the tower's face, or the round roof
-        for r in 0..h {
-            for c in 0..w {
-                let p = cv.centre(c, r);
-                match game.arena.path {
-                    Path::Circle { c: centre, r: rad } => {
-                        if (p - centre).len() < rad + 1.5 {
-                            cv.bg(c, r, FIELD);
-                        }
-                    }
-                    Path::Arc { c: centre, r: rad, .. } => {
-                        if p.x >= FIELD_X0 && p.x < FIELD_X1 && p.y >= FIELD_TOP && p.y < WORLD_H {
-                            cv.bg(c, r, if (p - centre).len() > rad + 1.5 { BALCONY } else { FIELD });
-                        }
-                    }
-                    Path::Line { .. } => {
-                        if p.x >= FIELD_X0 && p.x < FIELD_X1 && p.y >= FIELD_TOP && p.y < WORLD_H {
-                            cv.bg(c, r, FIELD);
-                        }
-                    }
-                }
-            }
-        }
-        if !matches!(game.arena.path, Path::Line { .. }) {
-            trace(&mut cv, &game.arena.path, RAIL);
-        }
-
-        // walls: steel pipes with brass bands
-        if game.arena.walls() {
-            let (left, top) = cv.cell(V2::new(FIELD_X0, FIELD_TOP));
-            let (right, bottom) = cv.cell(V2::new(FIELD_X1, WORLD_H - 0.01));
-            let (left, top) = (left - 1, top - 1);
-            for r in top + 1..=bottom {
-                let band = (r - top) % 5 == 0;
-                let (sym, fg) = if band { ("╫", BRASS) } else { ("║", STEEL) };
-                cv.put(left, r, sym, fg, Some(SKY));
-                cv.put(right, r, sym, fg, Some(SKY));
-            }
-            for c in left + 1..right {
-                let band = (c - left) % 8 == 0;
-                cv.put(c, top, if band { "╪" } else { "═" }, if band { BRASS } else { STEEL }, Some(SKY));
-            }
-            cv.put(left, top, "╔", STEEL, Some(SKY));
-            cv.put(right, top, "╗", STEEL, Some(SKY));
-        }
-
-        // bricks: lengths of pipe, single for ordinary, double for steel (single again
-        // once cracked) and gilt; boxes when a brick is more than one row tall
-        for (i, brick) in game.bricks.iter().enumerate() {
-            let Some(brick) = brick else { continue };
-            let (min, max) = game.brick_box(i);
-            let (c0, r0) = cv.cell(min + V2::new(0.01, 0.01));
-            let (c1, r1) = cv.cell(max - V2::new(0.01, 0.01));
-            let base = game::brick_rgb(brick.kind);
-            let (bg, fg) = if brick.flash > 0.0 {
-                (Color::Rgb(255, 255, 255), dim(base, 0.5))
-            } else {
-                (dim(base, 0.3), rgb(base))
-            };
-            let double = match brick.kind {
-                Kind::Plain(_) | Kind::Stone => false,
-                Kind::Steel => brick.hp > 1,
-                Kind::Gilt => true,
-            };
-            // [left end, run, right end] for a one-row brick, then the box corners and sides
-            let (ends, run, side, corners) = match (brick.kind, double) {
-                (Kind::Gilt, _) => (["╠", "╣"], "═", "║", ["╔", "╗", "╚", "╝"]),
-                (_, true) => (["╞", "╡"], "═", "│", ["╒", "╕", "╘", "╛"]),
-                _ => (["├", "┤"], "─", "│", ["┌", "┐", "└", "┘"]),
-            };
-            for r in r0..=r1 {
-                for c in c0..=c1 {
-                    let (left, right, top, bottom) = (c == c0, c == c1, r == r0, r == r1);
-                    let sym = if r0 == r1 {
-                        if left { ends[0] } else if right { ends[1] } else { run }
-                    } else {
-                        match (left, right, top, bottom) {
-                            (true, _, true, _) => corners[0],
-                            (_, true, true, _) => corners[1],
-                            (true, _, _, true) => corners[2],
-                            (_, true, _, true) => corners[3],
-                            (true, _, _, _) | (_, true, _, _) => side,
-                            (_, _, true, _) | (_, _, _, true) => run,
-                            _ => " ",
-                        }
-                    };
-                    cv.put(c, r, sym, fg, Some(bg));
-                }
-            }
-        }
+    draw_tower(&mut cv, game);
+    // the paddle's path along the balcony or round the roof, once the camera is still
+    if game.arena.mode != Mode::Line && !matches!(game.state, State::Clear { .. }) {
+        trace(&mut cv, &game.arena.path, RAIL);
+    }
+    if let Some(w) = &game.vane {
+        draw_weathercock(&mut cv, w);
     }
 
     for part in &game.particles {
@@ -522,8 +548,9 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     } else {
         (PADDLE_BODY, PADDLE_END)
     };
+    let climbing = game.tilt().is_some() && game.arena.mode != Mode::Circle;
     let (a, b, _) = game.paddle_segment();
-    let steps = (PADDLE_HALF * 8.0) as usize;
+    let steps = if climbing { 0 } else { (PADDLE_HALF * 8.0) as usize };
     let cells = walk(&cv, (0..=steps).map(|i| a + (b - a) * (i as f32 / steps as f32)));
     // the teal ends: the last 2 units at each end of the bar
     let bar: Vec<_> = strokes(&cells, true, false)
@@ -538,38 +565,15 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     }
     // cap a level paddle with half-strokes so its ends read as rounded
     let ((ca, ra), (cb, rb)) = (cv.cell(a), cv.cell(b));
-    if ra == rb {
+    if ra == rb && !climbing {
         cv.put(ca.min(cb), ra, "╺", ends, None);
         cv.put(ca.max(cb), rb, "╸", ends, None);
     }
 
     // balls: a little pipe ring at the ball's true size (`╭─╮ ╰─╯` when it is two
     // rows tall, `()` at the smallest size), centred on the ball
-    let cols = ((2.0 * BALL_R * view.s).round() as i32).max(2);
-    let rows = ((BALL_R * view.s).round() as i32).max(1);
-    let fg = Color::Rgb(255, 255, 240);
     for p in game.shown_balls() {
-        let c0 = (p.x * view.s + view.ox - cols as f32 / 2.0).round() as i32;
-        let r0 = ((p.y * view.s + view.oy) / 2.0 - rows as f32 / 2.0).round() as i32;
-        for r in 0..rows {
-            for c in 0..cols {
-                let (left, right, top, bottom) = (c == 0, c == cols - 1, r == 0, r == rows - 1);
-                let sym = if rows == 1 {
-                    if left { "(" } else if right { ")" } else { "─" }
-                } else {
-                    match (left, right, top, bottom) {
-                        (true, _, true, _) => "╭",
-                        (_, true, true, _) => "╮",
-                        (true, _, _, true) => "╰",
-                        (_, true, _, true) => "╯",
-                        (true, _, _, _) | (_, true, _, _) => "│",
-                        (_, _, true, _) | (_, _, _, true) => "─",
-                        _ => " ",
-                    }
-                };
-                cv.put(c0 + c, r0 + r, sym, fg, None);
-            }
-        }
+        pipe_ring(&mut cv, p, BALL_R, Color::Rgb(255, 255, 240));
     }
 }
 

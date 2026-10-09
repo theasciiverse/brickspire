@@ -4,9 +4,10 @@
 //! scales to any terminal; round things (ball, paddle) get analytic anti-aliasing.
 
 use crate::game::{self, Game, Kind, Mode, LEDGE, BALL_R, BRICK_H, BRICK_W, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, PADDLE_TH, WALL, WORLD_H, WORLD_W};
-use crate::boss::{self, Gargoyle};
+use crate::boss::{self, Gargoyle, Weathercock};
+use crate::roof::{self, RoofView, Seen, Tilt};
 use crate::game::Balcony;
-use crate::physics::{self, Path, V2};
+use crate::physics::{self, V2};
 use crate::tower::{self, Faces};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -151,56 +152,105 @@ fn tower_face(game: &Game, faces: &Faces, cam: f32, p: V2, ps: f32, bg: Rgb) -> 
     scale(c, s.light)
 }
 
-/// The arc and roof previews: a plain field, walls and bricks, no tower yet.
-fn scenery(game: &Game, p: V2, ps: f32, bg: Rgb) -> Rgb {
-    let mut c = bg;
-    match game.arena.path {
-        Path::Circle { c: centre, r } => {
-            // the round roof under the ring, with the ring itself marked
-            let d = (p - centre).len();
-            if d < r + PADDLE_TH + 1.5 {
-                c = masonry(p, ps, ps);
-            }
-            if (d - r).abs() < ps * 0.6 {
-                c = mix(c, [70.0, 90.0, 120.0], 0.8);
-            }
+/// The ground far below, seen from above the tower: dark fields, specks of trees
+/// and the odd light.
+fn ground(i: u32, j: u32) -> Rgb {
+    // fields in patches, darker specks of trees, and a rare lit window
+    let field = hash(i / 7, j / 4);
+    let base = mix([10.0, 18.0, 14.0], [24.0, 28.0, 17.0], (field & 0xff) as f32 / 255.0);
+    let speck = hash(i, j);
+    if speck % 1013 == 0 {
+        [150.0, 120.0, 60.0]
+    } else if speck % 11 == 0 {
+        scale(base, 0.55)
+    } else {
+        base
+    }
+}
+
+/// The roof's top at roof point `q`: flagstones laid in rings, the paddle's ring
+/// marked, the iron plinth the Weathercock stands on, bricks, and the parapet with
+/// its merlons round the rim.
+fn roof_top(game: &Game, roof: &RoofView, q: V2, ps: f32) -> Rgb {
+    let off = q - roof.centre;
+    let d = off.len();
+    let ang = off.y.atan2(off.x);
+    if d > roof::RIM - roof::PARAPET {
+        // 24 merlons round the rim, lit on their outer faces
+        let merlon = (ang / (std::f32::consts::TAU / 24.0)).rem_euclid(1.0) < 0.55;
+        let edge = (d - (roof::RIM - roof::PARAPET)) / roof::PARAPET;
+        return if merlon { mix([190.0, 182.0, 166.0], [120.0, 114.0, 108.0], edge) } else { mix([70.0, 66.0, 64.0], [40.0, 38.0, 40.0], edge) };
+    }
+    let mut c = {
+        let ring = (d / 4.0).floor();
+        let around = ang * (ring * 4.0 + 2.0) / 7.0 + ring * 0.5;
+        let mortar = d.rem_euclid(4.0) < ps || around.rem_euclid(1.0) * 7.0 < ps;
+        if mortar {
+            [26.0, 25.0, 32.0]
+        } else {
+            mix([60.0, 58.0, 68.0], [48.0, 46.0, 56.0], (hash(ring as u32, around.floor() as i32 as u32) & 0xff) as f32 / 255.0)
         }
-        _ => {
-            if p.x >= FIELD_X0 && p.x < FIELD_X1 && p.y >= FIELD_TOP && p.y < WORLD_H {
-                c = masonry(p, ps, ps);
-                if let Path::Arc { c: centre, r, .. } = game.arena.path {
-                    let d = (p - centre).len();
-                    if d > r + PADDLE_TH + 0.5 {
-                        // the balcony floor, below the rail
-                        c = mix([30.0, 26.0, 38.0], [14.0, 12.0, 20.0], (d - r) / 12.0);
-                    } else if (d - r).abs() < ps * 0.6 {
-                        c = mix(c, [70.0, 90.0, 120.0], 0.8);
-                    }
-                }
-            }
+    };
+    if d < 5.0 {
+        c = mix([58.0, 60.0, 70.0], [34.0, 35.0, 42.0], d / 5.0);
+    }
+    if (d - roof.ring).abs() < ps * 0.6 {
+        c = mix(c, [70.0, 90.0, 120.0], 0.8);
+    }
+    if let Some(b) = roof.brick(game, q) {
+        c = brick_colour(&b, q, game.time, ps, ps);
+    }
+    let waiting;
+    let vane = match &game.vane {
+        Some(w) => Some(w),
+        // still climbing: the Weathercock waits up there, pointing north
+        None if game.arena.mode != Mode::Circle => {
+            waiting = Weathercock::new(roof.centre);
+            Some(&waiting)
+        }
+        None => None,
+    };
+    if let Some(w) = vane {
+        if let Some(wc) = weathercock(w, q - w.centre) {
+            c = wc;
         }
     }
-    if game.arena.walls() {
-        let in_side = (p.x >= FIELD_X0 - WALL && p.x < FIELD_X0) || (p.x >= FIELD_X1 && p.x < FIELD_X1 + WALL);
-        let in_top = p.y >= FIELD_TOP - WALL && p.y < FIELD_TOP && p.x >= FIELD_X0 - WALL && p.x < FIELD_X1 + WALL;
-        if in_top {
-            c = pipe((p.y - (FIELD_TOP - WALL)) / WALL, p.x, ps);
-        } else if in_side && p.y < WORLD_H {
-            let across = if p.x < FIELD_X0 { (p.x - (FIELD_X0 - WALL)) / WALL } else { (p.x - FIELD_X1) / WALL };
-            c = pipe(across, p.y, ps);
+    c
+}
+
+/// The Weathercock, in its own units (`l` from its hub): an iron arrow with a brass
+/// head and a fletched tail, and a verdigris rooster on the hub with a red comb. It
+/// shudders before a gust and blinks white after a hit.
+fn weathercock(w: &Weathercock, l: V2) -> Option<Rgb> {
+    let l = if w.warning() { l + V2::new((w.t * 70.0).sin() * 0.35, 0.0) } else { l };
+    let dir = w.dir();
+    let side = V2::new(-dir.y, dir.x);
+    let (along, across) = (l.dot(dir), l.dot(side));
+    let mut c = None;
+    if along.abs() < boss::ARROW_HALF + 1.6 && across.abs() < 3.0 {
+        let head = boss::ARROW_HALF - 2.5;
+        if along > head && across.abs() < (boss::ARROW_HALF + 1.6 - along) * 0.75 {
+            c = Some(mix([255.0, 215.0, 110.0], [170.0, 120.0, 40.0], across.abs() / 2.0));
+        } else if along < -boss::ARROW_HALF + 3.5 && along > -boss::ARROW_HALF - 1.0 && across.abs() < 2.4 && (along * 1.6).rem_euclid(1.0) < 0.6 {
+            c = Some([110.0, 112.0, 126.0]);
+        } else if across.abs() < boss::ARROW_TH && along.abs() < boss::ARROW_HALF {
+            c = Some(mix([150.0, 152.0, 165.0], [50.0, 52.0, 62.0], (across / boss::ARROW_TH + 1.0) / 2.0));
         }
     }
-    if let Some((i, brick)) = game.brick_at(p) {
-        let q = p - game.origin;
-        let here = tower::BrickHere {
-            id: (game.floor as i64, i),
-            kind: brick.kind,
-            hp: brick.hp,
-            flash: brick.flash,
-            lx: q.x.rem_euclid(BRICK_W),
-            ly: q.y.rem_euclid(BRICK_H),
-        };
-        c = brick_colour(&here, q, game.time, ps, ps);
+    let d = l.len();
+    if d < boss::ROOSTER_R {
+        let comb = (l - dir * 1.2 - side * 1.3).len() < 1.1;
+        let eye = (l - dir * 1.6 + side * 0.2).len() < 0.45;
+        c = Some(if eye {
+            [20.0, 20.0, 24.0]
+        } else if comb {
+            [225.0, 50.0, 40.0]
+        } else {
+            mix([110.0, 200.0, 165.0], [40.0, 110.0, 90.0], d / boss::ROOSTER_R)
+        });
+    }
+    if w.hurt > 0.0 && (w.hurt * 12.0) as i32 % 2 == 0 {
+        c = c.map(|c| mix(c, [255.0, 255.0, 255.0], 0.75));
     }
     c
 }
@@ -246,8 +296,34 @@ fn gargoyle(g: &Gargoyle, l: V2) -> Option<Rgb> {
 }
 
 /// What lies under world point `p` (pixel size `ps` in world units).
-fn shade(game: &Game, faces: &Faces, cam: f32, balls: &[V2], p: V2, ps: f32, bg: Rgb) -> Rgb {
-    let mut c = if game.arena.mode != Mode::Circle { tower_face(game, faces, cam, p, ps, bg) } else { scenery(game, p, ps, bg) };
+/// Everything a frame needs to know once, rather than per pixel.
+struct Scene<'a> {
+    faces: Faces,
+    cam: f32,
+    balls: Vec<V2>,
+    tilt: Option<(Tilt, f32)>,
+    roof: Option<RoofView>,
+    game: &'a Game,
+}
+
+/// The scenery under world point `p`: the tower's side, or, near the roof, whatever
+/// the tilting camera sees there.
+fn scenery(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
+    let game = sc.game;
+    let Some((t, ground_y)) = &sc.tilt else { return tower_face(game, &sc.faces, sc.cam, p, ps, sky) };
+    // sky gives way to the ground far below as the camera turns to look down
+    let bg = mix(sky, ground, (t.e - 0.3) / 0.6);
+    match (t.seen(p, *ground_y), &sc.roof) {
+        (Seen::Roof(q), Some(roof)) => roof_top(game, roof, q, ps),
+        (Seen::Parapet(k), _) => mix([150.0, 142.0, 132.0], [70.0, 66.0, 64.0], k),
+        (Seen::Side(sp), _) => tower_face(game, &sc.faces, sc.cam, sp, ps, bg),
+        _ => bg,
+    }
+}
+
+fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
+    let game = sc.game;
+    let mut c = scenery(sc, p, ps, sky, ground);
     if let Some(g) = &game.boss {
         let l = p - g.p;
         if l.x.abs() < boss::HALF.x + 0.5 && l.y.abs() < boss::HALF.y + 1.0 {
@@ -268,7 +344,8 @@ fn shade(game: &Game, faces: &Faces, cam: f32, balls: &[V2], p: V2, ps: f32, bg:
     let q = physics::closest_on_segment(p, a, b);
     let off = p - q;
     let d = off.len();
-    if d < PADDLE_TH + ps {
+    let climbing = sc.tilt.is_some() && game.arena.mode != Mode::Circle;
+    if d < PADDLE_TH + ps && !climbing {
         let along = (q - (a + b) * 0.5).dot((b - a).norm()).abs();
         let across = off.dot(n) / PADDLE_TH; // +1 top face, -1 underside
         let mut body = if along > PADDLE_HALF - 2.0 { [40.0, 200.0, 185.0] } else { [235.0, 170.0, 55.0] };
@@ -280,7 +357,7 @@ fn shade(game: &Game, faces: &Faces, cam: f32, balls: &[V2], p: V2, ps: f32, bg:
         let lit = mix(scale(body, 0.5), mix(body, [255.0, 250.0, 220.0], 0.5), (across + 1.0) / 2.0);
         c = mix(c, lit, (PADDLE_TH - d) / ps + 0.5);
     }
-    for &bp in balls {
+    for &bp in &sc.balls {
         let d = (p - bp).len();
         if d < BALL_R + ps {
             let hi = (p - bp + V2::new(0.4, 0.4)).len() / BALL_R;
@@ -298,15 +375,23 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         return;
     }
     let ps = 1.0 / view.s;
-    let balls = game.shown_balls();
-    let faces = Faces::new(game);
-    let cam = game.camera();
+    let roof = RoofView::new(game);
+    let centre = roof.as_ref().map_or(V2::default(), |r| r.centre);
+    let sc = Scene {
+        faces: Faces::new(game),
+        cam: game.camera(),
+        balls: game.shown_balls(),
+        tilt: game.tilt().map(|k| (roof::tilt(k, centre), roof::ground_below(game.floor))),
+        roof,
+        game,
+    };
     let mut px = vec![[0.0f32; 3]; w * h];
     for j in 0..h {
         for i in 0..w {
             let p = V2::new((i as f32 + 0.5 - view.ox) * ps, (j as f32 + 0.5 - view.oy) * ps);
             let bg = sky(i as u32, j as u32, h as f32, game.time);
-            px[j * w + i] = shade(game, &faces, cam, &balls, p, ps, bg);
+            let below = if sc.tilt.is_some() { ground(i as u32, j as u32) } else { bg };
+            px[j * w + i] = shade(&sc, p, ps, bg, below);
         }
     }
     for part in &game.particles {

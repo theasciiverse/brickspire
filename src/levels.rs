@@ -4,22 +4,32 @@
 //! `m` magenta, `y` yellow; `S` steel (takes several hits); `G` gilt (can't be broken,
 //! and doesn't count towards clearing the floor); `s` stone (what the Gargoyle lays).
 //!
-//! A boss floor is cleared by beating its boss, not its bricks, and puts the paddle on
-//! the balcony's arc.
+//! A boss floor is cleared by beating its boss, not its bricks: the balcony puts the
+//! paddle on an arc against the Gargoyle, the roof on a full ring round the Weathercock.
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum FloorKind {
+    /// A flat floor: paddle on a straight line, clear the bricks.
+    Plain,
+    /// The mini-boss balcony: paddle on an arc, beat the Gargoyle.
+    Balcony,
+    /// The roof: looking straight down, paddle right round a ring, beat the Weathercock.
+    Roof,
+}
 
 pub struct Floor {
     pub name: &'static str,
     pub rows: &'static [&'static str],
-    /// The Gargoyle's balcony: paddle on the arc, beat the boss to clear it.
-    pub boss: bool,
+    pub kind: FloorKind,
 }
 
-/// The flat floors of the first tower, 13 bricks across.
+/// The first tower: flat floors 13 bricks across, the balcony partway up, the roof
+/// on top (its bricks a ring round the middle, where the Weathercock stands).
 pub const FLOORS: &[Floor] = &[
     Floor {
         name: "Ground Floor",
         rows: &["SSSSSSSSSSSSS", "rrrrrrrrrrrrr", "yyyyyyyyyyyyy", "bbbbbbbbbbbbb", "mmmmmmmmmmmmm", "ggggggggggggg"],
-        boss: false,
+        kind: FloorKind::Plain,
     },
     Floor {
         name: "The Spire",
@@ -33,7 +43,7 @@ pub const FLOORS: &[Floor] = &[
             "SSSSS...SSSSS",
             "ooooo...ooooo",
         ],
-        boss: false,
+        kind: FloorKind::Plain,
     },
     Floor {
         name: "Chequers",
@@ -46,7 +56,7 @@ pub const FLOORS: &[Floor] = &[
             "yyy..SSS..yyy",
             "ccc..www..ccc",
         ],
-        boss: false,
+        kind: FloorKind::Plain,
     },
     Floor {
         name: "Twin Lanterns",
@@ -60,7 +70,7 @@ pub const FLOORS: &[Floor] = &[
             "oo.........oo",
             "GoG.......GoG",
         ],
-        boss: false,
+        kind: FloorKind::Plain,
     },
     Floor {
         name: "The Gargoyle's Balcony",
@@ -74,7 +84,24 @@ pub const FLOORS: &[Floor] = &[
             "ccc..yyy..ccc",
             "..b.......b..",
         ],
-        boss: true,
+        kind: FloorKind::Balcony,
+    },
+    Floor {
+        name: "The Weathercock's Roof",
+        rows: &[
+            "..ccc..",
+            ".cbbbc.",
+            "cb...bc",
+            "b.....b",
+            "y.....y",
+            "S.....S",
+            "y.....y",
+            "b.....b",
+            "cb...bc",
+            ".cbbbc.",
+            "..ccc..",
+        ],
+        kind: FloorKind::Roof,
     },
 ];
 
@@ -83,5 +110,5 @@ pub const FLOORS: &[Floor] = &[
 pub const ROOF_TEST: Floor = Floor {
     name: "Roof (preview)",
     rows: &[".SS.", "SrrS", "ryyr", "yggy", "ryyr", "SrrS", ".SS."],
-    boss: false,
+    kind: FloorKind::Plain,
 };

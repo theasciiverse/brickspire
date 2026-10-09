@@ -164,6 +164,7 @@ cargo run --release -- --path arc           # preview the mini-boss arc on the s
 cargo run --release -- --path circle        # preview the roof ring (a small test block)
 cargo run --release -- --floor 3            # start on floor 3
 cargo run --release -- --floor 5            # the Gargoyle's balcony (first mini-boss)
+cargo run --release -- --floor 6            # the Weathercock's roof (first tower boss)
 cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
 cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5]   # headless frame
@@ -177,8 +178,12 @@ cargo test --release
 - `game.rs`: the rules at a fixed 120 Hz step; `Arena` per mode, bricks on a grid,
   paddle bat (normal turned up to 60 degrees by where it hits), the 18% minimum share
   on straight floors, lives, score, particles, and the autoplay `Pilot`.
-- `levels.rs`: floors as text grids; a `boss` floor puts the paddle on the balcony arc.
-- `boss.rs`: the Gargoyle (movement, spitting, hits, when it lays a shield).
+- `levels.rs`: floors as text grids, each a kind: plain (straight paddle), balcony
+  (arc, Gargoyle) or roof (ring, Weathercock).
+- `boss.rs`: the Gargoyle (movement, spitting, hits, when it lays a shield) and the
+  Weathercock (turning, gusts, spin-ups, hits).
+- `roof.rs`: the camera tilting up onto the roof, shared by both renderers (what a
+  screen point sees: roof top, parapet, tower side or beyond), and the roof's contents.
 - `tower.rs`: the tower's geometry, shared by both renderers: which floor's face, and
   where on it, lies under a screen point for a camera angle; the bricks of nearby floors.
 - `render.rs`: pixel mode, per-pixel half-block shading of the world, scaled to any terminal.
@@ -191,23 +196,32 @@ cargo test --release
 
 ## Status
 
-Build step 3 done (2026-10-09): arc mode and the first mini-boss. Floor 5 is the
-Gargoyle's Balcony. The tower turns onto it like any floor, its balcony swinging round
-with its face; the camera pulls back a little (pixel graphics), and the paddle runs on
-the balcony's arc (a quarter circle, bottom 2 units above the straight paddle line so
-the stone walkway and steel balustrade fit beneath). The Gargoyle (12 hits) flaps to
-and fro above the bricks, faster as it is hurt; spits fireballs at the paddle (a hit
-stuns it for 1 s, greyed and flickering, rather than costing a life); blinks for 0.9 s
-after each hit, during which hits don't count; and every third hit lays a row of stone
-bricks beneath itself, which stay put as it flies on. Beating it clears the floor.
-Autoplay needs 30 to 60 s and two lives to win (logged 2026-10-09), so the balance is a
-first guess for David to tune by playing. `--path` now forces one path on every floor.
+Build step 4 done (2026-10-09): circle mode on the roof and the first tower boss. The
+first tower is now Ground Floor, The Spire, Chequers, Twin Lanterns, the Gargoyle's
+Balcony, and the Weathercock's Roof; after the roof the climb starts again (next tower:
+step 5). Beating the Gargoyle doesn't turn the tower: the camera rises and tilts to look
+straight down (2.6 s). The roof shows as an ellipse that opens into a circle, the tower's
+side below it foreshortens away with its faces' tops following the cylinder's curve,
+and the sky gives way to the ground far below. The roof is flagstones in rings, a
+crenellated parapet (24 merlons), the paddle's ring (radius 25) and a ring of bricks.
+The Weathercock (16 hits) stands in the middle: its arrow turns slowly and bats the ball
+away (it can't be hurt), the rooster on its hub is the target; every 6 s (faster as it
+is hurt) it shudders, then blows a 1.6 s gust along the arrow that bends the ball's path
+in flight; every fourth hit it spins up and sweeps round fast for 2.5 s. Beating it
+climbs the tower: a 5000 bonus. Particles have no gravity looking straight down.
+Autoplay beats it in 60 to 120 s without losing a life, but autoplay tracks the ball
+perfectly round the ring; balance is a first guess, as with the Gargoyle.
+
+Step 3 (same day): arc mode and the Gargoyle on floor 5. The balcony is part of the
+floor's face, the camera pulls back a little (pixels), the Gargoyle (12 hits) spits
+fireballs that stun the paddle for 1 s, blinks 0.9 s after a hit, lays a stone shield
+every third hit. David played it: the arc plays really differently, and the balance
+felt right.
 
 Step 2 (same day): the turning tower. Four faces to a turn, each 14 units higher than
-the last, so the spiral tiles the cylinder; the front face is the flat field, walls as
-pilasters, a lintel, a stone ledge stepping up face to face; neighbours peek round the
-curve; clearing a floor holds 0.6 s, then the tower turns a quarter over 1.8 s.
+the last; the front face is the flat field, walls as pilasters, a lintel, a stone ledge;
+neighbours peek round the curve; clearing a floor holds 0.6 s, then turns over 1.8 s.
 
 Step 1 (same day): flat floors playable with keys, mouse and gamepad; ordinary, steel
-and gilt bricks, three lives, score, pixel and pipe graphics. Next: step 4, circle mode
-on the roof and the first tower boss.
+and gilt bricks, three lives, score, pixel and pipe graphics. Next: step 5, content
+(more floors and towers, brick types, power-ups, bosses).

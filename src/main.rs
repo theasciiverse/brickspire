@@ -16,6 +16,7 @@ mod input;
 mod levels;
 mod physics;
 mod render;
+mod roof;
 mod tower;
 
 use game::{Game, Mode, Pilot, State, STEP};
@@ -199,7 +200,14 @@ fn summary(game: &Game) -> String {
         game.left(),
         game.lives,
         game.score,
-        game.boss.as_ref().map_or(String::new(), |g| format!(
+        game.vane.as_ref().map_or(String::new(), |w| format!(
+            " weathercock at {:.0} deg hp {}/{}{}{}",
+            w.angle.to_degrees(),
+            w.hp,
+            w.max,
+            if w.gust > 0.0 { " gusting" } else { "" },
+            if w.spinning > 0.0 { " spinning" } else { "" }
+        )) + &game.boss.as_ref().map_or(String::new(), |g| format!(
             " gargoyle at {:.1},{:.1} hp {}/{} shots {}",
             g.p.x,
             g.p.y,
@@ -226,17 +234,20 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
         Span::styled(" BRICKSPIRE ", bar.add_modifier(Modifier::BOLD)),
         Span::styled(format!(" FLOOR {} {} ", game.floor + 1, game.floor_name), grey),
         Span::styled(format!(" SCORE {:06} ", game.score), bar.add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" BEST {best:06} "), grey),
+        // (room for a boss's health instead, during a fight)
+        Span::styled(if game.boss.is_some() || game.vane.is_some() { String::new() } else { format!(" BEST {best:06} ") }, grey),
         Span::styled(format!(" {lives}"), bar.fg(Color::Rgb(235, 170, 55))),
     ]);
     let mut top = top;
-    if let Some(g) = &game.boss {
-        let full = g.hp as usize;
-        top.spans.push(Span::styled(" GARGOYLE ", bar.fg(Color::Rgb(255, 90, 60)).add_modifier(Modifier::BOLD)));
-        top.spans.push(Span::styled(
-            format!("{}{}", "■".repeat(full), "·".repeat(g.max as usize - full)),
-            bar.fg(Color::Rgb(255, 90, 60)),
-        ));
+    let boss_bar = match (&game.boss, &game.vane) {
+        (Some(g), _) => Some(("GARGOYLE", g.hp, g.max)),
+        (_, Some(w)) => Some(("WEATHERCOCK", w.hp, w.max)),
+        _ => None,
+    };
+    if let Some((name, hp, max)) = boss_bar {
+        let red = bar.fg(Color::Rgb(255, 90, 60));
+        top.spans.push(Span::styled(format!(" {name} "), red.add_modifier(Modifier::BOLD)));
+        top.spans.push(Span::styled(format!("{}{}", "■".repeat(hp as usize), "·".repeat((max - hp) as usize)), red));
     }
     // clear first: a world cell is a `▀` whose top half takes the fg colour, so text
     // styled over it would leave coloured half-blocks wherever there is no glyph
@@ -259,6 +270,7 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
         State::Serve { wait } if wait < 2.5 => Some(format!(" FLOOR {}: {} · space to launch ", game.floor + 1, game.floor_name)),
         State::Lost { .. } if game.lives == 0 => Some(" LAST BALL LOST ".to_string()),
         State::Lost { .. } => Some(" BALL LOST ".to_string()),
+        State::Clear { .. } if game.arena.mode == Mode::Circle => Some(" TOWER CLIMBED · bonus 5000 ".to_string()),
         State::Clear { .. } => Some(format!(" FLOOR {} CLEAR ", game.floor + 1)),
         State::Over => Some(format!(" GAME OVER · score {} · space to play again ", game.score)),
         _ => None,
@@ -284,9 +296,15 @@ fn snapshot(out: &str) -> io::Result<()> {
         game.step(s, true);
     }
     // --turn F: clear the floor and stop F of the way through the tower's turn
+    // (or tilt, onto the roof); F is how far through its eased movement
     if let Some(f) = arg("--turn").and_then(|s| s.parse::<f32>().ok()) {
         game.skip_floor();
-        for _ in 0..(f.clamp(0.0, 0.999) * game::TURN_TIME / STEP) as usize {
+        let floor = game.floor;
+        for _ in 0..2000 {
+            let done = game.tilt().unwrap_or_else(|| game.camera().fract());
+            if done >= f.min(0.999) || game.floor != floor {
+                break;
+            }
             game.step(game::Steer::Move(0.0), false);
         }
     }
