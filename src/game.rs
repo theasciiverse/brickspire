@@ -1046,7 +1046,8 @@ impl Game {
                 }
                 self.balls.extend(more.into_iter().take(6));
             }
-            Power::Spare => self.lives = (self.lives + 1).min(9),
+            // (up to nine; never fewer than you had)
+            Power::Spare => self.lives = self.lives.max((self.lives + 1).min(9)),
             Power::Stair => {
                 info!("a stair opens: floor {} skipped", self.floor + 1);
                 self.score += 1000;
@@ -2368,6 +2369,46 @@ mod tests {
             }
         }
         assert!(seen >= 3, "{seen} capsules in two minutes");
+    }
+
+    /// The whole climb, title to the top of the last tower, by the autopilot with
+    /// lives to spare: every turn, tilt, roof and map on the way works. Slow: run it
+    /// with `cargo test --release -- --ignored`.
+    #[test]
+    #[ignore]
+    fn the_whole_climb() {
+        let mut g = Game::new(None);
+        assert!(g.map().is_some_and(|p| p.start));
+        g.lives = 99;
+        let mut pilot = Pilot::new();
+        let (mut secs, mut floor, mut since) = (0.0, 0, 0.0);
+        let mut maps = 0;
+        let mut in_map = false;
+        while secs < 4.0 * 3600.0 {
+            let s = pilot.steer(&g);
+            g.step(s, true);
+            secs += STEP;
+            since += STEP;
+            if g.map().is_some() != in_map {
+                in_map = !in_map;
+                maps += in_map as usize;
+            }
+            if g.floor != floor {
+                println!("floor {:>2} {:<28} {:>4.0} s, {} lives left", floor + 1, levels::floor(floor).name, since, g.lives);
+                assert_eq!(g.floor, floor + 1, "jumped from {floor} to {}", g.floor);
+                floor = g.floor;
+                since = 0.0;
+                if floor == levels::total() {
+                    break;
+                }
+            }
+            assert!(since < 600.0, "stuck on floor {} ({}) {:?}", floor + 1, levels::floor(floor).name, g.state);
+        }
+        assert_eq!(floor, levels::total(), "never got to the top: on floor {}", floor + 1);
+        // and round again, at the first tower's ground floor
+        assert_eq!(levels::tower_of(floor), (0, floor));
+        assert_eq!(maps, levels::TOWERS.len() + 1, "the opening map, and one after every tower");
+        println!("the whole climb: {:.0} minutes, {} lives lost, score {}", secs / 60.0, 99 - g.lives, g.score);
     }
 
     #[test]

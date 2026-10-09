@@ -479,7 +479,7 @@ pub const BELL_TOWER: &[Floor] = &[
         rows: &[
             ".kkk.....kkk.",
             "kooo.....oook",
-            ".kkk.SSS.kkk.",
+            ".ooo.SSS.ooo.",
             ".....rrr.....",
             "bbbbbbbbbbbbb",
             "S.S.S...S.S.S",

@@ -199,6 +199,7 @@ cargo run --release -- --mute               # no sound (m flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
 cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5] [--map 4 [--leave 0.5]]   # headless frame (--map T: the map after this tower, T s in; --leave L: L s into going on)
 cargo test --release
+cargo test --release -- --ignored --nocapture   # the whole climb, title to the top, by the autopilot (prints each floor)
 ```
 
 ## Code map
@@ -243,12 +244,19 @@ cargo test --release
 
 ## Status
 
+The whole climb (2026-10-10, overnight): a test has the autopilot play a new game
+from the title through all 50 floors, five maps and five roofs, to the start of
+the second lap: about 68 minutes of game time, 11 lives lost (it never dodges on
+purpose), every floor between about 30 s and 3 minutes. It caught a Spare
+capsule cutting lives down to 9 (now it only ever adds one, up to 9).
+
 Title (2026-10-10, overnight): a new game opens on the map with BRICKSPIRE spelled
 in bricks across the top, each letter in a brick colour with a sheen sweeping
 across (bevelled half-block squares as big as fit; `├┤` pipes on their colour in
 pipe mode), "AN ASCIIVERSE BRICK BREAKER · FIVE TOWERS TO CLIMB" under it, then
-"FIRST: THE OLD KEEP · space to climb". Step 6 still lacks music and a saved best
-score.
+"FIRST: THE OLD KEEP · space to climb". The best score is kept between games (in
+`$XDG_DATA_HOME`, `%APPDATA%` or `~/.local/share`, `brickspire/best`). Step 6 still
+lacks music.
 
 Sound (2026-10-09, overnight; step 6 begun): synthesised effects, no files. The
 paddle's wooden tock, a tick off the walls, each brick broken in a row since the
