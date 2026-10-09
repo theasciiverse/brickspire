@@ -5,6 +5,7 @@
 
 use crate::boss::{self, Flight, Hurt, MiniBoss, MiniKind, Rook, Shot, Storm, Weathercock};
 use crate::levels::{self, Floor, FloorKind, RoofBoss};
+use crate::map;
 use crate::physics::{self, Hit, Path, V2};
 use crate::roof;
 use log::info;
@@ -212,6 +213,8 @@ pub enum State {
     /// Every breakable brick is gone: `t` seconds since, holding for `CLEAR_HOLD`
     /// and then turning the tower for `TURN_TIME`.
     Clear { t: f32 },
+    /// A tower climbed: the map, `t` seconds in, before the next tower.
+    Map { t: f32 },
     Over,
 }
 
@@ -568,6 +571,17 @@ impl Game {
         });
         match self.state {
             State::Over => return,
+            State::Map { t } => {
+                let t = t + STEP;
+                let p = self.map();
+                if (fire && p.is_some_and(|p| p.ready())) || t >= map::MAP_TIME {
+                    info!("on to the next tower, floor {}", self.floor + 2);
+                    self.load_floor(self.floor + 1);
+                } else {
+                    self.state = State::Map { t };
+                }
+                return;
+            }
             State::Lost { t } => {
                 let t = t - STEP;
                 if t <= 0.0 {
@@ -587,7 +601,10 @@ impl Game {
                 // the paddle glides back to the middle while the tower turns
                 let mid = self.arena.path.len() / 2.0;
                 self.paddle.s += (mid - self.paddle.s) * (STEP * 3.0).min(1.0);
-                if t >= self.clear_time() {
+                if t >= self.clear_time() && self.arena.mode == Mode::Circle && self.forced.is_none() {
+                    info!("to the map");
+                    self.state = State::Map { t: 0.0 };
+                } else if t >= self.clear_time() {
                     info!("on to floor {}", self.floor + 2);
                     self.load_floor(self.floor + 1);
                 } else {
@@ -1250,7 +1267,7 @@ impl Game {
 
     /// Skip to the next floor (debug key).
     pub fn skip_floor(&mut self) {
-        if matches!(self.state, State::Clear { .. } | State::Over) {
+        if matches!(self.state, State::Clear { .. } | State::Over | State::Map { .. }) {
             return;
         }
         info!("skip floor {}", self.floor + 1);
@@ -1266,6 +1283,8 @@ impl Game {
         self.rook = None;
         if self.arena.mode != Mode::Circle {
             self.clear_floor(CLEAR_HOLD);
+        } else if self.forced.is_none() {
+            self.to_map();
         } else {
             self.load_floor(self.floor + 1);
         }
@@ -1315,6 +1334,23 @@ impl Game {
         } else {
             CLEAR_HOLD + TURN_TIME
         }
+    }
+
+    /// The map, while it shows.
+    pub fn map(&self) -> Option<map::Progress> {
+        match self.state {
+            State::Map { t } => Some(map::progress_after(self.floor, t, self.time)),
+            _ => None,
+        }
+    }
+
+    /// Straight to the map, as if this tower's roof were just beaten (snapshots).
+    pub fn to_map(&mut self) {
+        // the map follows a roof: from anywhere else in the tower, stand on its roof
+        let (t, first) = levels::tower_of(self.floor);
+        self.floor = first + levels::TOWERS[t].floors.len() - 1;
+        self.balls.clear();
+        self.state = State::Map { t: 0.0 };
     }
 
     /// A served ball is drawn on the paddle before it exists.

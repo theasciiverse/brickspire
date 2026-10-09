@@ -188,7 +188,7 @@ cargo run --release -- --floor 7            # the Ivy Tower (floors 7 to 12: spi
 cargo run --release -- --floor 6 --roof weathercock   # the Weathercock instead (saved for a later tower)
 cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
-cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5]   # headless frame
+cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5] [--map 4]   # headless frame (--map T: the map after this tower, T s in)
 cargo test --release
 ```
 
@@ -209,6 +209,8 @@ cargo test --release
   crouch and swoop, patching) and the Weathercock (turning, gusts, spin-ups, hits).
 - `roof.rs`: the camera tilting up onto the roof, shared by both renderers (what a
   screen point sees: roof top, parapet, tower side or beyond), and the roof's contents.
+- `map.rs`: the map between towers, shared by both renderers: the five towers on a
+  dusk landscape (shapes, where they stand), which are climbed, the trail.
 - `tower.rs`: the tower's geometry, shared by both renderers: which floor's face, and
   where on it, lies under a screen point for a camera angle; the bricks of nearby floors.
 - `render.rs`: pixel mode, per-pixel half-block shading of the world, scaled to any terminal.
@@ -226,8 +228,17 @@ towers, numbered straight through (`--floor 7` is the Ivy Tower's ground floor);
 after the last tower the climb starts again. Each tower has its own theme: the Old
 Keep's night sky and blue-grey stone, the Ivy Tower's dusk sky, mossy stone with ivy
 over the walls (thickest hanging from the lintels) and forest below. Only the
-current tower's floors show on the tower: below its first floor is plinth. Moving
-from one tower to the next is still a cut after the roof's 3.5 s hold.
+current tower's floors show on the tower: below its first floor is plinth.
+
+Between towers, the map (test version, same day, David's idea): after the roof's
+3.5 s hold, a wide dusk landscape with all five towers side on, each its own shape
+(the Old Keep with battlements, the Ivy Tower, the Bell Tower with a belfry and
+bell, the Sea Tower as a striped lighthouse with its lamp, the Brickspire's needle).
+Climbed towers fly a flag and have lit windows, the next stands lit with its name
+(pulsing gently), the rest are dark silhouettes named `?`. A dotted trail draws
+itself from the tower just climbed to the next over 2.2 s, a walker at its head;
+then space goes on (or after 9 s). Not yet: the map at the start of a game, a camera
+move from the roof up into the map and down into the next tower.
 
 The Ivy Tower: four floors with vine bricks (green, leafy, a stem along the middle):
 every 1.4 s each vine steps one cell along its row, gliding over 0.35 s, and turns

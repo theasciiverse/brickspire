@@ -14,6 +14,7 @@ mod game;
 mod glyph;
 mod input;
 mod levels;
+mod map;
 mod physics;
 mod render;
 mod roof;
@@ -303,10 +304,47 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
         State::Over => Some(format!(" GAME OVER · score {} · space to play again ", game.score)),
         _ => None,
     };
+    if let Some(p) = game.map() {
+        map_labels(&p, area, buf);
+    }
     if paused {
         banner(" PAUSED · p to carry on ", mid, area, buf);
     } else if let Some(msg) = msg {
         banner(&msg, mid, area, buf);
+    }
+}
+
+/// The map's words: what was climbed, each known tower's name under it (`?` for the
+/// rest), and once the trail is drawn, where next.
+fn map_labels(p: &map::Progress, area: Rect, buf: &mut Buffer) {
+    let world = world_area(area);
+    let h_px = world.height as f32 * 2.0;
+    let aspect = world.width as f32 / h_px;
+    let fade = (p.t / 0.6).min(1.0);
+    let lit = |c: [u8; 3]| Color::Rgb((c[0] as f32 * fade) as u8, (c[1] as f32 * fade) as u8, (c[2] as f32 * fade) as u8);
+    for (k, l) in map::SKYLINE.iter().enumerate() {
+        let known = p.climbed(k) || k == p.next;
+        let (x, base, ..) = map::place(k, aspect);
+        let name = if known { l.name.to_uppercase() } else { "?".to_string() };
+        let w = name.chars().count() as u16;
+        let col = (x * h_px) as i32 - w as i32 / 2;
+        let row = world.y + ((base + 0.07) * h_px / 2.0) as u16;
+        if row >= world.bottom() {
+            continue;
+        }
+        let col = col.clamp(0, world.width.saturating_sub(w) as i32) as u16;
+        let fg = if k == p.next { lit([255, 176, 0]) } else if known { lit([210, 210, 210]) } else { lit([120, 110, 150]) };
+        let r = Rect { x: world.x + col, y: row, width: w.min(world.width), height: 1 };
+        Paragraph::new(name).style(Style::default().fg(fg).add_modifier(Modifier::BOLD)).render(r, buf);
+    }
+    let title = if p.next <= p.from {
+        " EVERY TOWER CLIMBED · THE CLIMB BEGINS AGAIN ".to_string()
+    } else {
+        format!(" {} CLIMBED · TOWER BONUS 5000 ", map::SKYLINE[p.from].name.to_uppercase())
+    };
+    banner(&title, world.y + world.height / 8, area, buf);
+    if p.ready() {
+        banner(&format!(" NEXT: {} · space to climb ", map::SKYLINE[p.next].name.to_uppercase()), world.y + world.height / 8 + 2, area, buf);
     }
 }
 
@@ -322,6 +360,13 @@ fn snapshot(out: &str) -> io::Result<()> {
     for _ in 0..(secs / STEP) as usize {
         let s = pilot.steer(&game);
         game.step(s, true);
+    }
+    // --map T: straight to the map after this tower, T seconds in
+    if let Some(t) = arg("--map").and_then(|s| s.parse::<f32>().ok()) {
+        game.to_map();
+        for _ in 0..(t / STEP) as usize {
+            game.step(game::Steer::Move(0.0), false);
+        }
     }
     // --turn F: clear the floor and stop F of the way through the tower's turn
     // (or tilt, onto the roof); F is how far through its eased movement

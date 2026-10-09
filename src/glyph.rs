@@ -16,6 +16,7 @@ use crate::physics::{Path, V2};
 use crate::tower::{self, BrickHere, Faces, Sample};
 use crate::render::{self, View};
 use crate::levels::{self, Theme};
+use crate::map;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -635,8 +636,51 @@ fn brick_stroke(kind: Kind, double: bool, left: bool, right: bool, top: bool, bo
     }
 }
 
+/// The map between towers in glyphs: colours as in pixel mode for the sky, hills and
+/// stone, with lines for ledges, lit windows, leaves, the flag and the trail.
+fn draw_map(p: &map::Progress, area: Rect, buf: &mut Buffer) {
+    use map::{Look, Part};
+    let (w, rows) = (area.width as usize, area.height as usize);
+    let h_px = rows as f32 * 2.0;
+    let aspect = w as f32 / h_px;
+    // a cell is two pixels tall: things a pixel thick are looked for a little over
+    // one, so lines land in one row of cells
+    let ps = 0.6 / rows as f32;
+    let col = |c: [f32; 3]| Color::Rgb(c[0].clamp(0.0, 255.0) as u8, c[1].clamp(0.0, 255.0) as u8, c[2].clamp(0.0, 255.0) as u8);
+    for r in 0..rows {
+        for c in 0..w {
+            let (x, y) = ((c as f32 + 0.5) / h_px, (r as f32 + 0.5) / rows as f32);
+            let look = map::look(p, x, y, aspect, ps);
+            let rgb = render::map_colour(p, look, c as u32, r as u32);
+            let bg = match look {
+                Look::Trail | Look::Walker | Look::Pole => render::map_colour(p, map::look(p, x, y - 1.5 / rows as f32, aspect, 0.0), c as u32, r as u32),
+                _ => [rgb[0] * 0.75, rgb[1] * 0.75, rgb[2] * 0.75],
+            };
+            let (sym, fg) = match look {
+                Look::Sky(k) if k < 0.55 && hash(c as u32, r as u32) % 41 == 0 => ("·", [200.0, 200.0, 230.0]),
+                Look::Hill(_) if hash(c as u32, r as u32) % 9 == 0 => ("^", [20.0, 40.0, 24.0]),
+                Look::Tower { part: Part::Ledge, known: true, .. } => ("─", [rgb[0] * 1.2, rgb[1] * 1.2, rgb[2] * 1.2]),
+                Look::Tower { part: Part::Window, known: true, .. } => ("┃", rgb),
+                Look::Tower { part: Part::Leaves, .. } => ("%", rgb),
+                Look::Tower { part: Part::Lamp, .. } => ("*", rgb),
+                Look::Tower { part: Part::Bell, .. } => ("Ω", rgb),
+                Look::Pole => ("│", rgb),
+                Look::Trail => ("·", rgb),
+                Look::Walker => ("●", rgb),
+                _ => (" ", rgb),
+            };
+            let cell = &mut buf[(area.x + c as u16, area.y + r as u16)];
+            cell.set_symbol(sym).set_fg(col(fg)).set_bg(col(bg));
+        }
+    }
+}
+
 pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     let area = view.area;
+    if let Some(p) = game.map() {
+        draw_map(&p, area, buf);
+        return;
+    }
     let mut cv = Canvas { buf, view };
     let (w, h) = (area.width as i32, area.height as i32);
 

@@ -6,6 +6,7 @@
 use crate::game::{self, Game, Kind, Mode, LEDGE, BALL_R, BRICK_H, BRICK_W, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_TH, WALL, WORLD_H};
 use crate::boss::{self, Flight, MiniBoss, MiniKind, Rook, Storm, Weathercock};
 use crate::levels::{self, RoofBoss, Theme};
+use crate::map;
 use crate::roof::{self, RoofView, Seen, Tilt};
 use crate::game::Balcony;
 use crate::physics::{self, V2};
@@ -584,10 +585,82 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
     c
 }
 
+/// The colour of a map point (see `map::look`), faded in over its first moments.
+pub fn map_colour(p: &map::Progress, look: map::Look, i: u32, j: u32) -> Rgb {
+    use map::{Look, Part};
+    let c = match look {
+        Look::Sky(k) => {
+            let base = mix([10.0, 10.0, 34.0], [125.0, 72.0, 82.0], k * k);
+            let h = hash(i, j);
+            if k < 0.55 && h % 97 == 0 { mix(base, [235.0, 235.0, 255.0], 0.6 * (1.0 - k)) } else { base }
+        }
+        Look::Mountain => [44.0, 38.0, 70.0],
+        Look::Hill(d) => {
+            let base = mix([30.0, 52.0, 34.0], [10.0, 22.0, 16.0], d / 0.2);
+            if hash(i, j) % 13 == 0 { scale(base, 0.6) } else { base }
+        }
+        Look::Tower { k, part, lit, known, next } => {
+            if !known {
+                [24.0, 21.0, 40.0]
+            } else {
+                let stone = rgb(map::SKYLINE[k].stone);
+                let glow = if next { 0.85 + 0.15 * (p.time * 3.0).sin() } else { 1.0 };
+                let c = match part {
+                    Part::Wall => stone,
+                    Part::Ledge => mix(stone, [255.0, 255.0, 255.0], 0.25),
+                    Part::Battlement => scale(stone, 0.9),
+                    Part::Window if p.climbed(k) => [255.0, 200.0, 110.0],
+                    Part::Window => [30.0, 28.0, 44.0],
+                    Part::Leaves => [70.0, 140.0, 60.0],
+                    Part::Stripe => [200.0, 55.0, 48.0],
+                    Part::Lamp => mix([255.0, 230.0, 140.0], [255.0, 255.0, 230.0], 0.5 + 0.5 * (p.time * 4.0).sin()),
+                    Part::Bell => [235.0, 185.0, 60.0],
+                    Part::Roof => match map::SKYLINE[k].shape {
+                        map::Shape::Bell => [170.0, 80.0, 60.0],
+                        map::Shape::Lighthouse => [140.0, 40.0, 40.0],
+                        _ => [95.0, 92.0, 135.0],
+                    },
+                };
+                let lamp = matches!(part, Part::Lamp | Part::Window);
+                scale(c, if lamp { glow } else { lit * glow })
+            }
+        }
+        Look::Pole => [210.0, 210.0, 215.0],
+        Look::Flag => [230.0, 70.0, 50.0],
+        Look::Trail => [240.0, 220.0, 160.0],
+        Look::Walker => [255.0, 245.0, 210.0],
+    };
+    scale(c, (p.t / 0.6).min(1.0))
+}
+
+/// The map between towers, filling the area.
+fn draw_map(p: &map::Progress, area: Rect, buf: &mut Buffer) {
+    let (w, h) = (area.width as usize, area.height as usize * 2);
+    let ps = 1.0 / h as f32;
+    let aspect = w as f32 / h as f32;
+    let col = |c: Rgb| Color::Rgb(c[0].clamp(0.0, 255.0) as u8, c[1].clamp(0.0, 255.0) as u8, c[2].clamp(0.0, 255.0) as u8);
+    let at = |i: usize, j: usize| {
+        let look = map::look(p, (i as f32 + 0.5) * ps, (j as f32 + 0.5) * ps, aspect, ps);
+        col(map_colour(p, look, i as u32, j as u32))
+    };
+    for y in 0..area.height as usize {
+        for x in 0..w {
+            let cell = &mut buf[(area.x + x as u16, area.y + y as u16)];
+            cell.set_symbol("▀");
+            cell.set_fg(at(x, 2 * y));
+            cell.set_bg(at(x, 2 * y + 1));
+        }
+    }
+}
+
 pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     let area = view.area;
     let (w, h) = (area.width as usize, area.height as usize * 2);
     if w == 0 || h == 0 {
+        return;
+    }
+    if let Some(p) = game.map() {
+        draw_map(&p, area, buf);
         return;
     }
     let ps = 1.0 / view.s;
