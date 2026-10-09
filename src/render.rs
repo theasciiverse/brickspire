@@ -3,8 +3,9 @@
 //! pixel is shaded by asking the world what lies under its centre, so the picture
 //! scales to any terminal; round things (ball, paddle) get analytic anti-aliasing.
 
-use crate::game::{self, Game, Kind, BALL_R, BRICK_H, BRICK_W, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, PADDLE_TH, WALL, WORLD_H, WORLD_W};
+use crate::game::{self, Game, Kind, Mode, LEDGE, BALL_R, BRICK_H, BRICK_W, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, PADDLE_TH, WALL, WORLD_H, WORLD_W};
 use crate::physics::{self, Path, V2};
+use crate::tower::{self, Faces};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -66,24 +67,83 @@ fn sky(i: u32, j: u32, h_px: f32, time: f32) -> Rgb {
     base
 }
 
-/// The tower's own wall behind the bricks: faint masonry.
-fn masonry(p: V2, ps: f32) -> Rgb {
+/// The tower's own wall behind the bricks: faint masonry. `psx`/`psy` are a
+/// pixel's size across and down, so mortar stays a pixel thick where the face is squashed.
+fn masonry(p: V2, psx: f32, psy: f32) -> Rgb {
     let row = (p.y / 4.0).floor();
     let x = p.x + if row as i32 % 2 == 0 { 0.0 } else { 4.0 };
-    let mortar = p.y.rem_euclid(4.0) < ps || x.rem_euclid(8.0) < ps;
+    let mortar = p.y.rem_euclid(4.0) < psy || x.rem_euclid(8.0) < psx;
     if mortar { [14.0, 16.0, 30.0] } else { [26.0, 28.0, 48.0] }
 }
 
-/// What lies under world point `p` (pixel size `ps` in world units).
-fn shade(game: &Game, balls: &[V2], p: V2, ps: f32, bg: Rgb) -> Rgb {
+/// Steel pipe, lit across its width (`across` 0 to 1), with brass bands along it.
+fn pipe(across: f32, along: f32, ps: f32) -> Rgb {
+    if along.rem_euclid(9.0) < ps * 1.01 {
+        return [210.0, 160.0, 60.0];
+    }
+    let lit = 1.0 - (across - 0.35).abs() * 1.3;
+    mix([40.0, 50.0, 70.0], [170.0, 185.0, 210.0], lit)
+}
+
+/// A brick, bevelled: lit top and left edges, shaded bottom and right, a sheen
+/// sweeping over metal ones, white while flashing from a hit.
+fn brick_colour(b: &tower::BrickHere, at: V2, time: f32, psx: f32, psy: f32) -> Rgb {
+    let mut base = rgb(game::brick_rgb(b.kind));
+    if b.kind == Kind::Steel || b.kind == Kind::Gilt {
+        let sheen = ((at.x + at.y * 2.0 - time * 30.0).rem_euclid(60.0) - 30.0).abs() < 2.0;
+        if sheen {
+            base = mix(base, [255.0, 255.0, 255.0], 0.45);
+        }
+    }
+    let mut c = if b.lx < psx || b.ly < psy {
+        mix(base, [255.0, 255.0, 255.0], 0.45)
+    } else if b.lx >= BRICK_W - psx || b.ly >= BRICK_H - psy {
+        scale(base, 0.45)
+    } else {
+        base
+    };
+    if b.flash > 0.0 {
+        c = mix(c, [255.0, 255.0, 255.0], b.flash / 0.15);
+    }
+    c
+}
+
+/// Straight floors: whichever face of the tower is under `p`.
+fn tower_face(game: &Game, faces: &Faces, cam: f32, p: V2, ps: f32, bg: Rgb) -> Rgb {
+    let Some(s) = tower::sample(p.x, p.y, cam) else { return bg };
+    let (u, v) = (s.u, s.v);
+    let (psx, psy) = (ps * s.squash, ps);
+    let c = if v < FIELD_TOP {
+        pipe((v - (FIELD_TOP - WALL)) / WALL, u, psx)
+    } else if u < FIELD_X0 || u >= FIELD_X1 {
+        let across = if u < FIELD_X0 { (u - (FIELD_X0 - WALL)) / WALL } else { (u - FIELD_X1) / WALL };
+        pipe(across, v, psy)
+    } else if v >= LEDGE {
+        // the stone ledge the spiral climbs by, lit along its top edge
+        if v < LEDGE + psy {
+            [190.0, 180.0, 160.0]
+        } else {
+            mix([120.0, 110.0, 100.0], [50.0, 46.0, 52.0], (v - LEDGE) / (WORLD_H - LEDGE))
+        }
+    } else if let Some(b) = faces.brick(game, s.n, u, v) {
+        brick_colour(&b, V2::new(u, v), game.time, psx, psy)
+    } else {
+        masonry(V2::new(u, v), psx, psy)
+    };
+    // the plinth below the first floor is plain and darker
+    let c = if s.n < 0 && v >= FIELD_TOP { scale(masonry(V2::new(u, v), psx, psy), 0.7) } else { c };
+    scale(c, s.light)
+}
+
+/// The arc and roof previews: a plain field, walls and bricks, no tower yet.
+fn scenery(game: &Game, p: V2, ps: f32, bg: Rgb) -> Rgb {
     let mut c = bg;
-    let walls = game.arena.walls();
     match game.arena.path {
         Path::Circle { c: centre, r } => {
             // the round roof under the ring, with the ring itself marked
             let d = (p - centre).len();
             if d < r + PADDLE_TH + 1.5 {
-                c = masonry(p, ps);
+                c = masonry(p, ps, ps);
             }
             if (d - r).abs() < ps * 0.6 {
                 c = mix(c, [70.0, 90.0, 120.0], 0.8);
@@ -91,7 +151,7 @@ fn shade(game: &Game, balls: &[V2], p: V2, ps: f32, bg: Rgb) -> Rgb {
         }
         _ => {
             if p.x >= FIELD_X0 && p.x < FIELD_X1 && p.y >= FIELD_TOP && p.y < WORLD_H {
-                c = masonry(p, ps);
+                c = masonry(p, ps, ps);
                 if let Path::Arc { c: centre, r, .. } = game.arena.path {
                     let d = (p - centre).len();
                     if d > r + PADDLE_TH + 0.5 {
@@ -104,42 +164,34 @@ fn shade(game: &Game, balls: &[V2], p: V2, ps: f32, bg: Rgb) -> Rgb {
             }
         }
     }
-    if walls {
+    if game.arena.walls() {
         let in_side = (p.x >= FIELD_X0 - WALL && p.x < FIELD_X0) || (p.x >= FIELD_X1 && p.x < FIELD_X1 + WALL);
         let in_top = p.y >= FIELD_TOP - WALL && p.y < FIELD_TOP && p.x >= FIELD_X0 - WALL && p.x < FIELD_X1 + WALL;
-        if (in_side && p.y >= FIELD_TOP - WALL && p.y < WORLD_H) || in_top {
-            // steel pipe, lit across its width, with brass rivets
-            let across = if in_top && !in_side { (p.y - (FIELD_TOP - WALL)) / WALL } else if p.x < FIELD_X0 { (p.x - (FIELD_X0 - WALL)) / WALL } else { (p.x - FIELD_X1) / WALL };
-            let along = if in_top && !in_side { p.x } else { p.y };
-            let lit = 1.0 - (across - 0.35).abs() * 1.3;
-            c = mix([40.0, 50.0, 70.0], [170.0, 185.0, 210.0], lit);
-            if along.rem_euclid(9.0) < ps * 1.01 {
-                c = [210.0, 160.0, 60.0];
-            }
+        if in_top {
+            c = pipe((p.y - (FIELD_TOP - WALL)) / WALL, p.x, ps);
+        } else if in_side && p.y < WORLD_H {
+            let across = if p.x < FIELD_X0 { (p.x - (FIELD_X0 - WALL)) / WALL } else { (p.x - FIELD_X1) / WALL };
+            c = pipe(across, p.y, ps);
         }
     }
-    if let Some((_, brick)) = game.brick_at(p) {
+    if let Some((i, brick)) = game.brick_at(p) {
         let q = p - game.origin;
-        let (lx, ly) = (q.x.rem_euclid(BRICK_W), q.y.rem_euclid(BRICK_H));
-        let mut base = rgb(game::brick_rgb(brick.kind));
-        if brick.kind == Kind::Steel || brick.kind == Kind::Gilt {
-            // a sheen sweeping across metal bricks
-            let sheen = ((q.x + q.y * 2.0 - game.time * 30.0).rem_euclid(60.0) - 30.0).abs() < 2.0;
-            if sheen {
-                base = mix(base, [255.0, 255.0, 255.0], 0.45);
-            }
-        }
-        c = if lx < ps || ly < ps {
-            mix(base, [255.0, 255.0, 255.0], 0.45)
-        } else if lx >= BRICK_W - ps || ly >= BRICK_H - ps {
-            scale(base, 0.45)
-        } else {
-            base
+        let here = tower::BrickHere {
+            id: (game.floor as i64, i),
+            kind: brick.kind,
+            hp: brick.hp,
+            flash: brick.flash,
+            lx: q.x.rem_euclid(BRICK_W),
+            ly: q.y.rem_euclid(BRICK_H),
         };
-        if brick.flash > 0.0 {
-            c = mix(c, [255.0, 255.0, 255.0], brick.flash / 0.15);
-        }
+        c = brick_colour(&here, q, game.time, ps, ps);
     }
+    c
+}
+
+/// What lies under world point `p` (pixel size `ps` in world units).
+fn shade(game: &Game, faces: &Faces, cam: f32, balls: &[V2], p: V2, ps: f32, bg: Rgb) -> Rgb {
+    let mut c = if game.arena.mode == Mode::Line { tower_face(game, faces, cam, p, ps, bg) } else { scenery(game, p, ps, bg) };
     // the paddle: a brass bar with teal ends, lit from above along its normal
     let (a, b, n) = game.paddle_segment();
     let q = physics::closest_on_segment(p, a, b);
@@ -171,12 +223,14 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     }
     let ps = 1.0 / view.s;
     let balls = game.shown_balls();
+    let faces = Faces::new(game);
+    let cam = game.camera();
     let mut px = vec![[0.0f32; 3]; w * h];
     for j in 0..h {
         for i in 0..w {
             let p = V2::new((i as f32 + 0.5 - view.ox) * ps, (j as f32 + 0.5 - view.oy) * ps);
             let bg = sky(i as u32, j as u32, h as f32, game.time);
-            px[j * w + i] = shade(game, &balls, p, ps, bg);
+            px[j * w + i] = shade(game, &faces, cam, &balls, p, ps, bg);
         }
     }
     for part in &game.particles {

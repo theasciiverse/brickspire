@@ -7,7 +7,7 @@
 //! Run: `cargo run --release [-- --path line|arc|circle] [--floor N] [--glyphs]`
 //! (`RUST_LOG=debug ... 2>brickspire.log` for a session log). Snapshot without a
 //! terminal: `cargo run --release -- --snapshot out.ppm [--size 100x30] [--secs t]
-//! [--path P] [--floor N] [--glyphs]` autoplays for `t` seconds and renders one frame as an image.
+//! [--path P] [--floor N] [--glyphs] [--turn F]` autoplays for `t` seconds and renders one frame as an image.
 
 mod game;
 mod glyph;
@@ -15,6 +15,7 @@ mod input;
 mod levels;
 mod physics;
 mod render;
+mod tower;
 
 use game::{Game, Mode, Pilot, State, STEP};
 use input::Input;
@@ -260,6 +261,13 @@ fn snapshot(out: &str) -> io::Result<()> {
     for _ in 0..(secs / STEP) as usize {
         let s = pilot.steer(&game);
         game.step(s, true);
+    }
+    // --turn F: clear the floor and stop F of the way through the tower's turn
+    if let Some(f) = arg("--turn").and_then(|s| s.parse::<f32>().ok()) {
+        game.skip_floor();
+        for _ in 0..(f.clamp(0.0, 0.999) * game::TURN_TIME / STEP) as usize {
+            game.step(game::Steer::Move(0.0), false);
+        }
     }
     let area = Rect::new(0, 0, cols, rows);
     let mut buf = Buffer::empty(area);

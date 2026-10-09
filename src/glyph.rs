@@ -8,8 +8,9 @@
 //! view is nudged so the brick grid lands on cell edges. Same world, same physics as
 //! pixel mode; only the drawing differs.
 
-use crate::game::{self, Game, Kind, BALL_R, BRICK_H, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, WORLD_H, WORLD_W};
+use crate::game::{self, Game, Kind, Mode, BALL_R, BRICK_H, LEDGE, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, WORLD_H, WORLD_W};
 use crate::physics::{Path, V2};
+use crate::tower::{self, BrickHere, Faces, Sample};
 use crate::render::View;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -23,6 +24,9 @@ const BRASS: Color = Color::Rgb(220, 165, 60);
 const PADDLE_END: Color = Color::Rgb(40, 210, 190);
 const PADDLE_BODY: Color = Color::Rgb(240, 175, 60);
 const RAIL: Color = Color::Rgb(70, 90, 125);
+const PIPE_BG: Color = Color::Rgb(38, 46, 64);
+const LEDGE_STONE: Color = Color::Rgb(175, 165, 145);
+const LEDGE_SHADOW: Color = Color::Rgb(55, 50, 56);
 
 /// Pixels per world unit at size step `k`: a brick is `4k` cells by `k` rows.
 fn scale_for(k: u32) -> f32 {
@@ -125,6 +129,136 @@ fn line(t: V2, heavy: bool) -> &'static str {
     }
 }
 
+/// What a cell of the tower shows.
+#[derive(Clone, Copy, PartialEq)]
+enum Part {
+    Sky,
+    Lintel,
+    Pilaster,
+    Ledge,
+    Wall,
+    Brick(BrickHere),
+}
+
+fn lit(c: Color, k: f32) -> Color {
+    match c {
+        Color::Rgb(r, g, b) => Color::Rgb((r as f32 * k) as u8, (g as f32 * k) as u8, (b as f32 * k) as u8),
+        c => c,
+    }
+}
+
+/// Straight floors: the tower's faces, each cell drawn from what it shows and what
+/// its neighbours show, so bricks keep their ends even squashed round the curve.
+fn draw_tower(cv: &mut Canvas, game: &Game) {
+    let cam = game.camera();
+    let faces = Faces::new(game);
+    let (w, h) = (cv.view.area.width as i32, cv.view.area.height as i32);
+    let samples: Vec<Option<Sample>> = (0..h)
+        .flat_map(|r| (0..w).map(move |c| (c, r)))
+        .map(|(c, r)| {
+            let p = cv.centre(c, r);
+            tower::sample(p.x, p.y, cam)
+        })
+        .collect();
+    let parts: Vec<Part> = samples
+        .iter()
+        .map(|s| match *s {
+            None => Part::Sky,
+            Some(s) if s.v < FIELD_TOP => Part::Lintel,
+            Some(s) if s.u < FIELD_X0 || s.u >= FIELD_X1 => Part::Pilaster,
+            Some(s) if s.v >= LEDGE => Part::Ledge,
+            Some(s) => faces.brick(game, s.n, s.u, s.v).map_or(Part::Wall, Part::Brick),
+        })
+        .collect();
+    let at = |c: i32, r: i32| if c < 0 || r < 0 || c >= w || r >= h { Part::Sky } else { parts[(r * w + c) as usize] };
+    let same = |a: Part, b: Part| match (a, b) {
+        (Part::Brick(x), Part::Brick(y)) => x.id == y.id,
+        _ => false,
+    };
+    for r in 0..h {
+        for c in 0..w {
+            let Some(s) = samples[(r * w + c) as usize] else { continue };
+            let k = s.light;
+            let wall = lit(if s.n < 0 { BALCONY } else { FIELD }, k);
+            match at(c, r) {
+                Part::Sky => {}
+                Part::Wall => cv.bg(c, r, wall),
+                Part::Lintel => {
+                    let left = samples.get((r * w + c - 1) as usize).copied().flatten();
+                    let band = at(c - 1, r) == Part::Lintel && left.is_some_and(|l| (l.u / 9.0).floor() != (s.u / 9.0).floor());
+                    let below_edge = at(c, r + 1) == Part::Pilaster && (at(c - 1, r + 1) != Part::Pilaster || at(c + 1, r + 1) != Part::Pilaster);
+                    let (sym, fg) = if below_edge {
+                        ("╦", STEEL)
+                    } else if band {
+                        ("╪", BRASS)
+                    } else {
+                        ("═", STEEL)
+                    };
+                    cv.put(c, r, sym, lit(fg, k), Some(wall));
+                }
+                Part::Pilaster => {
+                    // a column is a pipe: lines down its edges, steel between
+                    let edge = at(c - 1, r) != Part::Pilaster || at(c + 1, r) != Part::Pilaster;
+                    if edge {
+                        let above = if r > 0 { samples[((r - 1) * w + c) as usize] } else { None };
+                        let band = at(c, r - 1) == Part::Pilaster && above.is_some_and(|a| (a.v / 9.0).floor() != (s.v / 9.0).floor());
+                        let (sym, fg) = if band { ("╫", BRASS) } else { ("║", STEEL) };
+                        cv.put(c, r, sym, lit(fg, k), Some(lit(PIPE_BG, k)));
+                    } else {
+                        cv.bg(c, r, lit(PIPE_BG, k));
+                    }
+                }
+                Part::Ledge => cv.put(c, r, "▒", lit(LEDGE_STONE, k), Some(lit(LEDGE_SHADOW, k))),
+                Part::Brick(b) => {
+                    let here = at(c, r);
+                    let (left, right) = (!same(here, at(c - 1, r)), !same(here, at(c + 1, r)));
+                    let (top, bottom) = (!same(here, at(c, r - 1)), !same(here, at(c, r + 1)));
+                    let base = game::brick_rgb(b.kind);
+                    let (bg, fg) = if b.flash > 0.0 {
+                        (Color::Rgb(255, 255, 255), dim(base, 0.5))
+                    } else {
+                        (lit(dim(base, 0.3), k), lit(rgb(base), k))
+                    };
+                    let double = match b.kind {
+                        Kind::Plain(_) => false,
+                        Kind::Steel => b.hp > 1,
+                        Kind::Gilt => true,
+                    };
+                    let sym = brick_stroke(b.kind, double, left, right, top, bottom);
+                    cv.put(c, r, sym, fg, Some(bg));
+                }
+            }
+        }
+    }
+}
+
+/// The stroke for one cell of a brick, from which of its sides are the brick's edge.
+fn brick_stroke(kind: Kind, double: bool, left: bool, right: bool, top: bool, bottom: bool) -> &'static str {
+    let (ends, run, side, corners) = match (kind, double) {
+        (Kind::Gilt, _) => (["╠", "╣"], "═", "║", ["╔", "╗", "╚", "╝"]),
+        (_, true) => (["╞", "╡"], "═", "│", ["╒", "╕", "╘", "╛"]),
+        _ => (["├", "┤"], "─", "│", ["┌", "┐", "└", "┘"]),
+    };
+    if top && bottom {
+        // one row tall: a length of pipe; one cell wide (squashed): just its side
+        return match (left, right) {
+            (true, true) => side,
+            (true, false) => ends[0],
+            (false, true) => ends[1],
+            _ => run,
+        };
+    }
+    match (left, right, top, bottom) {
+        (true, _, true, _) => corners[0],
+        (_, true, true, _) => corners[1],
+        (true, _, _, true) => corners[2],
+        (_, true, _, true) => corners[3],
+        (true, _, _, _) | (_, true, _, _) => side,
+        (_, _, true, _) | (_, _, _, true) => run,
+        _ => " ",
+    }
+}
+
 pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     let area = view.area;
     let mut cv = Canvas { buf, view };
@@ -145,93 +279,97 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         }
     }
 
-    // the field: the tower's face, or the round roof
-    for r in 0..h {
-        for c in 0..w {
-            let p = cv.centre(c, r);
-            match game.arena.path {
-                Path::Circle { c: centre, r: rad } => {
-                    if (p - centre).len() < rad + 1.5 {
-                        cv.bg(c, r, FIELD);
+    if game.arena.mode == Mode::Line {
+        draw_tower(&mut cv, game);
+    } else {
+        // the field: the tower's face, or the round roof
+        for r in 0..h {
+            for c in 0..w {
+                let p = cv.centre(c, r);
+                match game.arena.path {
+                    Path::Circle { c: centre, r: rad } => {
+                        if (p - centre).len() < rad + 1.5 {
+                            cv.bg(c, r, FIELD);
+                        }
                     }
-                }
-                Path::Arc { c: centre, r: rad, .. } => {
-                    if p.x >= FIELD_X0 && p.x < FIELD_X1 && p.y >= FIELD_TOP && p.y < WORLD_H {
-                        cv.bg(c, r, if (p - centre).len() > rad + 1.5 { BALCONY } else { FIELD });
+                    Path::Arc { c: centre, r: rad, .. } => {
+                        if p.x >= FIELD_X0 && p.x < FIELD_X1 && p.y >= FIELD_TOP && p.y < WORLD_H {
+                            cv.bg(c, r, if (p - centre).len() > rad + 1.5 { BALCONY } else { FIELD });
+                        }
                     }
-                }
-                Path::Line { .. } => {
-                    if p.x >= FIELD_X0 && p.x < FIELD_X1 && p.y >= FIELD_TOP && p.y < WORLD_H {
-                        cv.bg(c, r, FIELD);
+                    Path::Line { .. } => {
+                        if p.x >= FIELD_X0 && p.x < FIELD_X1 && p.y >= FIELD_TOP && p.y < WORLD_H {
+                            cv.bg(c, r, FIELD);
+                        }
                     }
                 }
             }
         }
-    }
-    if !matches!(game.arena.path, Path::Line { .. }) {
-        trace(&mut cv, &game.arena.path, RAIL);
-    }
-
-    // walls: steel pipes with brass bands
-    if game.arena.walls() {
-        let (left, top) = cv.cell(V2::new(FIELD_X0, FIELD_TOP));
-        let (right, bottom) = cv.cell(V2::new(FIELD_X1, WORLD_H - 0.01));
-        let (left, top) = (left - 1, top - 1);
-        for r in top + 1..=bottom {
-            let band = (r - top) % 5 == 0;
-            let (sym, fg) = if band { ("╫", BRASS) } else { ("║", STEEL) };
-            cv.put(left, r, sym, fg, Some(SKY));
-            cv.put(right, r, sym, fg, Some(SKY));
+        if !matches!(game.arena.path, Path::Line { .. }) {
+            trace(&mut cv, &game.arena.path, RAIL);
         }
-        for c in left + 1..right {
-            let band = (c - left) % 8 == 0;
-            cv.put(c, top, if band { "╪" } else { "═" }, if band { BRASS } else { STEEL }, Some(SKY));
-        }
-        cv.put(left, top, "╔", STEEL, Some(SKY));
-        cv.put(right, top, "╗", STEEL, Some(SKY));
-    }
 
-    // bricks: lengths of pipe, single for ordinary, double for steel (single again
-    // once cracked) and gilt; boxes when a brick is more than one row tall
-    for (i, brick) in game.bricks.iter().enumerate() {
-        let Some(brick) = brick else { continue };
-        let (min, max) = game.brick_box(i);
-        let (c0, r0) = cv.cell(min + V2::new(0.01, 0.01));
-        let (c1, r1) = cv.cell(max - V2::new(0.01, 0.01));
-        let base = game::brick_rgb(brick.kind);
-        let (bg, fg) = if brick.flash > 0.0 {
-            (Color::Rgb(255, 255, 255), dim(base, 0.5))
-        } else {
-            (dim(base, 0.3), rgb(base))
-        };
-        let double = match brick.kind {
-            Kind::Plain(_) => false,
-            Kind::Steel => brick.hp > 1,
-            Kind::Gilt => true,
-        };
-        // [left end, run, right end] for a one-row brick, then the box corners and sides
-        let (ends, run, side, corners) = match (brick.kind, double) {
-            (Kind::Gilt, _) => (["╠", "╣"], "═", "║", ["╔", "╗", "╚", "╝"]),
-            (_, true) => (["╞", "╡"], "═", "│", ["╒", "╕", "╘", "╛"]),
-            _ => (["├", "┤"], "─", "│", ["┌", "┐", "└", "┘"]),
-        };
-        for r in r0..=r1 {
-            for c in c0..=c1 {
-                let (left, right, top, bottom) = (c == c0, c == c1, r == r0, r == r1);
-                let sym = if r0 == r1 {
-                    if left { ends[0] } else if right { ends[1] } else { run }
-                } else {
-                    match (left, right, top, bottom) {
-                        (true, _, true, _) => corners[0],
-                        (_, true, true, _) => corners[1],
-                        (true, _, _, true) => corners[2],
-                        (_, true, _, true) => corners[3],
-                        (true, _, _, _) | (_, true, _, _) => side,
-                        (_, _, true, _) | (_, _, _, true) => run,
-                        _ => " ",
-                    }
-                };
-                cv.put(c, r, sym, fg, Some(bg));
+        // walls: steel pipes with brass bands
+        if game.arena.walls() {
+            let (left, top) = cv.cell(V2::new(FIELD_X0, FIELD_TOP));
+            let (right, bottom) = cv.cell(V2::new(FIELD_X1, WORLD_H - 0.01));
+            let (left, top) = (left - 1, top - 1);
+            for r in top + 1..=bottom {
+                let band = (r - top) % 5 == 0;
+                let (sym, fg) = if band { ("╫", BRASS) } else { ("║", STEEL) };
+                cv.put(left, r, sym, fg, Some(SKY));
+                cv.put(right, r, sym, fg, Some(SKY));
+            }
+            for c in left + 1..right {
+                let band = (c - left) % 8 == 0;
+                cv.put(c, top, if band { "╪" } else { "═" }, if band { BRASS } else { STEEL }, Some(SKY));
+            }
+            cv.put(left, top, "╔", STEEL, Some(SKY));
+            cv.put(right, top, "╗", STEEL, Some(SKY));
+        }
+
+        // bricks: lengths of pipe, single for ordinary, double for steel (single again
+        // once cracked) and gilt; boxes when a brick is more than one row tall
+        for (i, brick) in game.bricks.iter().enumerate() {
+            let Some(brick) = brick else { continue };
+            let (min, max) = game.brick_box(i);
+            let (c0, r0) = cv.cell(min + V2::new(0.01, 0.01));
+            let (c1, r1) = cv.cell(max - V2::new(0.01, 0.01));
+            let base = game::brick_rgb(brick.kind);
+            let (bg, fg) = if brick.flash > 0.0 {
+                (Color::Rgb(255, 255, 255), dim(base, 0.5))
+            } else {
+                (dim(base, 0.3), rgb(base))
+            };
+            let double = match brick.kind {
+                Kind::Plain(_) => false,
+                Kind::Steel => brick.hp > 1,
+                Kind::Gilt => true,
+            };
+            // [left end, run, right end] for a one-row brick, then the box corners and sides
+            let (ends, run, side, corners) = match (brick.kind, double) {
+                (Kind::Gilt, _) => (["╠", "╣"], "═", "║", ["╔", "╗", "╚", "╝"]),
+                (_, true) => (["╞", "╡"], "═", "│", ["╒", "╕", "╘", "╛"]),
+                _ => (["├", "┤"], "─", "│", ["┌", "┐", "└", "┘"]),
+            };
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    let (left, right, top, bottom) = (c == c0, c == c1, r == r0, r == r1);
+                    let sym = if r0 == r1 {
+                        if left { ends[0] } else if right { ends[1] } else { run }
+                    } else {
+                        match (left, right, top, bottom) {
+                            (true, _, true, _) => corners[0],
+                            (_, true, true, _) => corners[1],
+                            (true, _, _, true) => corners[2],
+                            (_, true, _, true) => corners[3],
+                            (true, _, _, _) | (_, true, _, _) => side,
+                            (_, _, true, _) | (_, _, _, true) => run,
+                            _ => " ",
+                        }
+                    };
+                    cv.put(c, r, sym, fg, Some(bg));
+                }
             }
         }
     }

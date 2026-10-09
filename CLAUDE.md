@@ -165,7 +165,7 @@ cargo run --release -- --path circle        # preview the roof ring (a small tes
 cargo run --release -- --floor 3            # start on floor 3
 cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
-cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc]   # headless frame
+cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5]   # headless frame
 cargo test --release
 ```
 
@@ -177,6 +177,8 @@ cargo test --release
   paddle bat (normal turned up to 60 degrees by where it hits), the 18% minimum share
   on straight floors, lives, score, particles, and the autoplay `Pilot`.
 - `levels.rs`: floors as text grids.
+- `tower.rs`: the tower's geometry, shared by both renderers: which floor's face, and
+  where on it, lies under a screen point for a camera angle; the bricks of nearby floors.
 - `render.rs`: pixel mode, per-pixel half-block shading of the world, scaled to any terminal.
 - `glyph.rs`: glyph mode, pipe graphics (box-drawing lines, no half-blocks): bricks are
   lengths of pipe `├──┤` (steel `╞══╡`, gilt `╠══╣`), boxes when taller than a row; the
@@ -187,9 +189,17 @@ cargo test --release
 
 ## Status
 
-Build step 1 done (2026-10-09): flat floors are playable with keys, mouse and gamepad;
-four floors (Ground Floor, The Spire, Chequers, Twin Lanterns), ordinary, steel and gilt
-bricks, three lives, score, pixel and glyph graphics. The paddle physics already runs on all three paths, and
-`--path arc` / `--path circle` preview them on a plain field; autoplay clears floors
-in all three modes without the ball leaving the field (tested). Next: step 2, the
-tower renderer and the spiral turn between floors.
+Build step 2 done (2026-10-09): the turning tower. Four faces to a turn, each 14 units
+(a quarter of a face) higher than the last, so face n + 4 stands on face n and the
+spiral tiles the cylinder. The front face is the flat play field; its walls are the
+pilasters between faces and its top wall the lintel, with a stone ledge along the
+bottom that steps up face to face. Past the front face the cylinder curves away: the
+next floor's real bricks peek round the right edge, higher; the cleared floor (its gilt
+left) round the left, lower; on tall terminals the floors above and below show too.
+Clearing a floor holds for 0.6 s, then the tower turns a quarter and the camera rises a
+step over 1.8 s. Pixel and pipe graphics both draw it.
+
+Step 1 (same day): flat floors playable with keys, mouse and gamepad; four floors,
+ordinary, steel and gilt bricks, three lives, score, pixel and glyph graphics. The
+paddle physics already runs on all three paths; `--path arc` / `--path circle` preview
+them on a plain field (no tower). Next: step 3, arc mode and the first mini-boss.

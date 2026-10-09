@@ -21,6 +21,11 @@ pub const WALL: f32 = 2.0;
 pub const BRICK_W: f32 = 6.0;
 pub const BRICK_H: f32 = 3.0;
 const BRICKS_TOP: f32 = 8.0;
+/// The stone ledge along the bottom of every face of the tower.
+pub const LEDGE: f32 = 54.0;
+/// After a floor is cleared: a moment to see it, then the tower turns to the next.
+pub const CLEAR_HOLD: f32 = 0.6;
+pub const TURN_TIME: f32 = 1.8;
 pub const PADDLE_Y: f32 = 52.0;
 /// Half the paddle's length, and half its thickness.
 pub const PADDLE_HALF: f32 = 7.0;
@@ -125,7 +130,8 @@ pub enum State {
     Play,
     /// The last ball is gone; a moment before the next serve.
     Lost { t: f32 },
-    /// Every breakable brick is gone; a moment before the next floor.
+    /// Every breakable brick is gone: `t` seconds since, holding for `CLEAR_HOLD`
+    /// and then turning the tower for `TURN_TIME`.
     Clear { t: f32 },
     Over,
 }
@@ -192,6 +198,38 @@ pub fn brick_rgb(kind: Kind) -> [u8; 3] {
     }
 }
 
+/// A floor's bricks as a grid, `cols` wide.
+pub fn parse(def: &Floor) -> (usize, usize, Vec<Option<Kind>>) {
+    let cols = def.rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let cells = def
+        .rows
+        .iter()
+        .flat_map(|row| {
+            let mut cells: Vec<Option<Kind>> = row
+                .chars()
+                .map(|ch| match ch {
+                    'S' => Some(Kind::Steel),
+                    'G' => Some(Kind::Gilt),
+                    _ => Some(Kind::Plain("wocgrbmy".find(ch)? as u8)),
+                })
+                .collect();
+            cells.resize(cols, None);
+            cells
+        })
+        .collect();
+    (cols, def.rows.len(), cells)
+}
+
+/// Where a straight floor's brick grid starts: centred, below the lintel.
+pub fn line_origin(cols: usize) -> V2 {
+    V2::new(WORLD_W / 2.0 - cols as f32 * BRICK_W / 2.0, BRICKS_TOP)
+}
+
+fn smoothstep(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
 impl Game {
     pub fn new(mode: Mode) -> Game {
         let mut g = Game {
@@ -224,32 +262,17 @@ impl Game {
         let def = self.floor_def(n);
         self.floor = n;
         self.floor_name = def.name;
-        self.rows = def.rows.len();
-        self.cols = def.rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let (cols, rows, cells) = parse(def);
+        (self.cols, self.rows) = (cols, rows);
         let (w, h) = (self.cols as f32 * BRICK_W, self.rows as f32 * BRICK_H);
         self.origin = match self.arena.path {
             Path::Circle { c, .. } => c - V2::new(w / 2.0, h / 2.0),
-            _ => V2::new(WORLD_W / 2.0 - w / 2.0, BRICKS_TOP),
+            _ => line_origin(cols),
         };
-        let steel_hp = 2 + (n / 8) as u8;
-        self.bricks = def
-            .rows
-            .iter()
-            .flat_map(|row| {
-                let mut cells: Vec<Option<Brick>> = row
-                    .chars()
-                    .map(|ch| {
-                        let kind = match ch {
-                            'S' => Kind::Steel,
-                            'G' => Kind::Gilt,
-                            _ => Kind::Plain("wocgrbmy".find(ch)? as u8),
-                        };
-                        Some(Brick { kind, hp: if kind == Kind::Steel { steel_hp } else { 1 }, flash: 0.0 })
-                    })
-                    .collect();
-                cells.resize(self.cols, None);
-                cells
-            })
+        let steel_hp = steel_hp(n);
+        self.bricks = cells
+            .into_iter()
+            .map(|k| k.map(|kind| Brick { kind, hp: if kind == Kind::Steel { steel_hp } else { 1 }, flash: 0.0 }))
             .collect();
         self.particles.clear();
         self.serve();
@@ -341,10 +364,17 @@ impl Game {
                 return;
             }
             State::Clear { t } => {
-                let t = t - STEP;
-                if t <= 0.0 {
+                let t = t + STEP;
+                // the paddle glides back to the middle while the tower turns
+                let mid = self.arena.path.len() / 2.0;
+                self.paddle.s += (mid - self.paddle.s) * (STEP * 3.0).min(1.0);
+                if t >= CLEAR_HOLD + TURN_TIME {
+                    info!("tower turned to floor {}", self.floor + 2);
                     self.load_floor(self.floor + 1);
                 } else {
+                    if t > CLEAR_HOLD && t - STEP <= CLEAR_HOLD {
+                        info!("tower turning");
+                    }
                     self.state = State::Clear { t };
                 }
                 return;
@@ -375,7 +405,7 @@ impl Game {
             self.state = State::Lost { t: 1.2 };
         } else if self.left() == 0 {
             info!("floor {} clear: score {}", self.floor + 1, self.score);
-            self.state = State::Clear { t: 2.0 };
+            self.clear_floor(0.0);
         }
     }
 
@@ -554,8 +584,38 @@ impl Game {
 
     /// Skip to the next floor (debug key).
     pub fn skip_floor(&mut self) {
+        if matches!(self.state, State::Clear { .. } | State::Over) {
+            return;
+        }
         info!("skip floor {}", self.floor + 1);
-        self.load_floor(self.floor + 1);
+        // as if cleared: only the gilt stays, so the turn shows the floor as it will be
+        for b in self.bricks.iter_mut() {
+            if b.is_some_and(|b| b.kind != Kind::Gilt) {
+                *b = None;
+            }
+        }
+        if self.arena.mode == Mode::Line {
+            self.clear_floor(CLEAR_HOLD);
+        } else {
+            self.load_floor(self.floor + 1);
+        }
+    }
+
+    /// The floor is done: the balls go, and the tower turns (straight floors) or the
+    /// next floor simply loads (the arc and roof previews).
+    fn clear_floor(&mut self, t: f32) {
+        self.balls.clear();
+        self.state = State::Clear { t };
+    }
+
+    /// Where the camera faces, in floors: the current floor, plus how far through
+    /// the turn to the next one.
+    pub fn camera(&self) -> f32 {
+        let turn = match self.state {
+            State::Clear { t } if self.arena.mode == Mode::Line => smoothstep((t - CLEAR_HOLD) / TURN_TIME),
+            _ => 0.0,
+        };
+        self.floor as f32 + turn
     }
 
     /// A served ball is drawn on the paddle before it exists.
@@ -565,6 +625,11 @@ impl Game {
             _ => self.balls.iter().map(|b| b.p).collect(),
         }
     }
+}
+
+/// Hits a steel brick takes on floor `n` (0-based).
+pub fn steel_hp(n: usize) -> u8 {
+    2 + (n / 8) as u8
 }
 
 /// Autoplay for snapshots and tests: keep the paddle under the ball, hitting it
