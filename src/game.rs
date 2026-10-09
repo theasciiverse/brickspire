@@ -320,9 +320,45 @@ pub struct Game {
     pub caught: Option<(Power, f32)>,
     /// The map showing is the one at the start of a game.
     pub opening: bool,
+    /// Sounds asked for during the last step, and bricks broken in a row.
+    pub events: Vec<Sound>,
+    combo: u32,
     /// A paddle path forced for every floor (`--path`), instead of each floor's own.
     forced: Option<Mode>,
     seed: u32,
+}
+
+/// A sound the rules ask for, taken by the player each step (`Game::events`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Sound {
+    Launch,
+    Paddle,
+    Wall,
+    /// A brick broken, and how many in a row since the ball last left the paddle.
+    Break(u32),
+    /// A hit that didn't break it (steel, ice), or off gilt.
+    Clink,
+    Gilt,
+    BossHit,
+    BossDown,
+    /// A boss spat, threw or struck at the paddle.
+    Spit,
+    /// The paddle stunned, webbed, iced or chipped.
+    Struck,
+    Thunder,
+    Toll,
+    Swoop,
+    Lob,
+    /// Clockwork winding back in.
+    Tick,
+    Power,
+    Chisel,
+    Lost,
+    Clear,
+    Climbed,
+    GameOver,
+    /// Going on from the map.
+    Go,
 }
 
 /// What a ball touched.
@@ -453,6 +489,8 @@ impl Game {
             chisel_reload: 0.0,
             caught: None,
             opening: false,
+            events: Vec::new(),
+            combo: 0,
             forced,
             seed: 0x9e37_79b9,
         };
@@ -657,6 +695,7 @@ impl Game {
             self.bricks[i] = Some(Brick { flash: 0.15, ..Brick::new(Kind::Clock, 1) });
             self.ghosts.retain(|g| g.i != i);
             info!("clockwork winds back in at {i}");
+            self.sound(Sound::Tick);
         }
     }
 
@@ -701,7 +740,12 @@ impl Game {
         (self.seed >> 8) as f32 / (1u32 << 24) as f32
     }
 
+    fn sound(&mut self, s: Sound) {
+        self.events.push(s);
+    }
+
     pub fn step(&mut self, steer: Steer, fire: bool) {
+        self.events.clear();
         self.time += STEP;
         for b in self.bricks.iter_mut().flatten() {
             b.flash = (b.flash - STEP).max(0.0);
@@ -724,6 +768,7 @@ impl Game {
                     Some(l) => Some(l + STEP),
                     None if (fire && ready) || t >= map::MAP_TIME => {
                         info!("map: going on");
+                        self.events.push(Sound::Go);
                         Some(0.0)
                     }
                     None => None,
@@ -743,6 +788,7 @@ impl Game {
                     if self.lives == 0 {
                         info!("game over: score {}", self.score);
                         self.state = State::Over;
+                        self.sound(Sound::GameOver);
                     } else {
                         self.serve();
                     }
@@ -808,12 +854,14 @@ impl Game {
         if self.balls.is_empty() {
             self.lives = self.lives.saturating_sub(1);
             info!("life lost: {} left", self.lives);
+            self.sound(Sound::Lost);
             self.shots.clear();
             self.state = State::Lost { t: 1.2 };
         } else if self.boss_floor && !self.boss_left() {
             info!("floor {} clear, boss beaten: score {}", self.floor + 1, self.score);
             if self.arena.mode == Mode::Circle {
                 info!("tower climbed: bonus {TOWER_BONUS}");
+                self.sound(Sound::Climbed);
                 self.score += TOWER_BONUS;
             }
             self.clear_floor(0.0);
@@ -837,6 +885,8 @@ impl Game {
     }
 
     fn launch(&mut self) {
+        self.sound(Sound::Launch);
+        self.combo = 0;
         let path = &self.arena.path;
         let dir = path.normal(self.paddle.s).rotate(0.35);
         self.balls.push(Ball::new(self.held_ball(), dir * self.speed));
@@ -940,6 +990,7 @@ impl Game {
             self.release();
         } else if fire && self.power == Some(Power::Chisel) && self.chisel_reload == 0.0 {
             self.chisel_reload = power::CHISEL_EVERY;
+            self.sound(Sound::Chisel);
             let (a, b, n) = self.paddle_segment();
             let t = (b - a).norm();
             for end in [a + t * 1.2, b - t * 1.2] {
@@ -971,6 +1022,7 @@ impl Game {
     }
 
     fn catch(&mut self, kind: Power) {
+        self.sound(Sound::Power);
         info!("caught {kind:?}");
         self.score += 100;
         self.caught = Some((kind, 2.0));
@@ -1066,7 +1118,10 @@ impl Game {
             self.balls[i].p = ball.p + d * hit.t + hit.n * 1e-3;
             left *= 1.0 - hit.t;
             match thing {
-                Thing::Wall => self.balls[i].v = ball.v.reflect(hit.n),
+                Thing::Wall => {
+                    self.balls[i].v = ball.v.reflect(hit.n);
+                    self.sound(Sound::Wall);
+                }
                 Thing::Brick(b) => {
                     let mut v = ball.v.reflect(hit.n);
                     if self.bricks[b].is_some_and(|b| b.kind == Kind::Ice) {
@@ -1077,7 +1132,11 @@ impl Game {
                     self.balls[i].v = v;
                     self.hit_brick(b);
                 }
-                Thing::Paddle => self.bat(i),
+                Thing::Paddle => {
+                    self.combo = 0;
+                    self.sound(Sound::Paddle);
+                    self.bat(i);
+                }
                 Thing::Boss => {
                     self.balls[i].v = ball.v.reflect(hit.n);
                     self.hit_boss();
@@ -1227,6 +1286,7 @@ impl Game {
         self.speed = (self.speed + SPEED_PER_HIT).min(self.speed_max());
         if brick.kind == Kind::Gilt {
             brick.flash = 0.12;
+            self.sound(Sound::Gilt);
             self.bricks[i] = Some(brick);
             return;
         }
@@ -1234,9 +1294,12 @@ impl Game {
         if brick.hp > 0 {
             brick.flash = 0.15;
             self.bricks[i] = Some(brick);
+            self.sound(Sound::Clink);
             return;
         }
         self.bricks[i] = None;
+        self.combo += 1;
+        self.sound(Sound::Break(self.combo));
         if brick.kind == Kind::Clock {
             self.ghosts.retain(|g| g.i != i);
             self.ghosts.push(Ghost { i, left: CLOCK_BACK });
@@ -1297,7 +1360,11 @@ impl Game {
         let Some(mut g) = self.boss.take() else { return };
         let live = self.state == State::Play;
         let target = self.arena.path.point(self.paddle.s);
+        let shots = self.shots.len();
         g.update(STEP, live, target, &mut self.shots);
+        if self.shots.len() > shots {
+            self.sound(Sound::Spit);
+        }
         let (min, max) = g.bounds();
         for b in self.balls.iter_mut() {
             if let Some((depth, n)) = physics::box_overlap(b.p, min, max, BALL_R) {
@@ -1323,26 +1390,31 @@ impl Game {
             Some((at, ShotKind::Fire)) => {
                 info!("paddle stunned");
                 self.stun = STUN;
+                self.sound(Sound::Struck);
                 self.burst(at, V2::new(2.0, 1.0), 10, [255, 150, 40], 22.0);
             }
             Some((at, ShotKind::Chime)) => {
                 info!("paddle stunned by a chime");
                 self.stun = STUN;
+                self.sound(Sound::Struck);
                 self.burst(at, V2::new(2.0, 1.0), 10, [255, 225, 120], 22.0);
             }
             Some((at, ShotKind::Brick)) => {
                 info!("paddle chipped");
                 self.chipped = CHIPPED;
+                self.sound(Sound::Struck);
                 self.burst(at, V2::new(2.0, 1.0), 12, [200, 80, 60], 20.0);
             }
             Some((at, ShotKind::Spray)) => {
                 info!("paddle iced over");
                 self.iced = ICED;
+                self.sound(Sound::Struck);
                 self.burst(at, V2::new(3.0, 1.0), 12, [190, 235, 255], 14.0);
             }
             Some((at, ShotKind::Web)) => {
                 info!("paddle webbed");
                 self.webbed = WEBBED;
+                self.sound(Sound::Struck);
                 self.burst(at, V2::new(3.0, 1.0), 10, [215, 215, 225], 12.0);
             }
             None => {}
@@ -1389,6 +1461,9 @@ impl Game {
         let paddle = self.arena.path.point(self.paddle.s);
         let at_paddle = (paddle - c).y.atan2((paddle - c).x);
         let struck = s.update(STEP, self.state == State::Play, at_paddle);
+        if struck.is_some() {
+            self.sound(Sound::Thunder);
+        }
         for b in self.balls.iter_mut() {
             let off = b.p - s.centre;
             let reach = boss::CORE_R + BALL_R;
@@ -1416,6 +1491,7 @@ impl Game {
             if off.abs() < boss::BOLT_SPAN + self.paddle_half() / r {
                 info!("paddle struck by lightning");
                 self.stun = STUN;
+                self.sound(Sound::Struck);
                 self.burst(paddle, V2::new(2.0, 2.0), 10, [190, 210, 255], 22.0);
             }
         }
@@ -1431,7 +1507,11 @@ impl Game {
         };
         let paddle = self.arena.path.point(self.paddle.s);
         let at_paddle = (paddle - c).y.atan2((paddle - c).x);
+        let nesting = !matches!(rook.flight, Flight::Swooping { .. });
         rook.update(STEP, self.state == State::Play, r, at_paddle);
+        if nesting && matches!(rook.flight, Flight::Swooping { .. }) {
+            self.sound(Sound::Swoop);
+        }
         for b in self.balls.iter_mut() {
             let off = b.p - rook.p;
             let reach = boss::CROW_R + BALL_R;
@@ -1456,6 +1536,7 @@ impl Game {
         if stunned {
             info!("paddle struck by the rook");
             self.stun = STUN;
+            self.sound(Sound::Struck);
             self.burst(at, V2::new(3.0, 3.0), 12, [40, 40, 55], 22.0);
         }
     }
@@ -1465,6 +1546,7 @@ impl Game {
     fn update_bell(&mut self) {
         let Some(mut bell) = self.bell.take() else { return };
         if bell.update(STEP, self.state == State::Play, roof::RIM) {
+            self.sound(Sound::Toll);
             let at = bell.p;
             self.burst(at, V2::new(3.0, 3.0), 10, [255, 220, 130], 18.0);
         }
@@ -1493,6 +1575,7 @@ impl Game {
         if let Some(at) = stunned {
             info!("paddle stunned by the bell");
             self.stun = STUN;
+            self.sound(Sound::Struck);
             self.burst(at, V2::new(2.0, 2.0), 10, [255, 220, 130], 22.0);
         }
     }
@@ -1508,6 +1591,10 @@ impl Game {
         let paddle = self.arena.path.point(self.paddle.s);
         let at_paddle = (paddle - c).y.atan2((paddle - c).x);
         let (landed, build) = m.update(STEP, self.state == State::Play, at_paddle);
+        // (a brick just thrown still has all its flight ahead of it)
+        if m.lobs.iter().any(|l| l.left > boss::LOB_TIME - STEP * 0.5) {
+            self.sound(Sound::Lob);
+        }
         for b in self.balls.iter_mut() {
             let off = b.p - m.p;
             let reach = boss::MASON_R + BALL_R;
@@ -1528,6 +1615,7 @@ impl Game {
             if off.abs() < boss::LOB_SPAN + self.paddle_half() / r {
                 info!("paddle struck by a lobbed brick");
                 self.stun = STUN;
+                self.sound(Sound::Struck);
             }
         }
         if build {
@@ -1564,6 +1652,7 @@ impl Game {
         match hurt {
             Hurt::Shrugged => return,
             Hurt::Hurt | Hurt::Shield => {
+                self.sound(Sound::BossHit);
                 info!("mason hit: {hp} left");
                 self.score += 200;
                 self.burst(at, V2::new(3.0, 3.0), 8, [90, 120, 200], 16.0);
@@ -1572,6 +1661,7 @@ impl Game {
                 }
             }
             Hurt::Dead => {
+                self.sound(Sound::BossDown);
                 info!("the mason beaten");
                 self.score += 10000;
                 self.mason = None;
@@ -1589,11 +1679,13 @@ impl Game {
         match hurt {
             Hurt::Shrugged => return,
             Hurt::Hurt | Hurt::Shield => {
+                self.sound(Sound::BossHit);
                 info!("bell hit: {hp} left");
                 self.score += 150;
                 self.burst(at, V2::new(3.0, 3.0), 8, [235, 180, 80], 16.0);
             }
             Hurt::Dead => {
+                self.sound(Sound::BossDown);
                 info!("bell beaten");
                 self.score += 4000;
                 self.bell = None;
@@ -1623,6 +1715,7 @@ impl Game {
         match hurt {
             Hurt::Shrugged => return,
             Hurt::Hurt | Hurt::Shield => {
+                self.sound(Sound::BossHit);
                 info!("rook hit: {hp} left");
                 self.score += 150;
                 self.burst(at, V2::new(3.0, 3.0), 8, [30, 30, 45], 18.0);
@@ -1634,6 +1727,7 @@ impl Game {
                 }
             }
             Hurt::Dead => {
+                self.sound(Sound::BossDown);
                 info!("rook beaten");
                 self.score += 4000;
                 self.rook = None;
@@ -1651,6 +1745,7 @@ impl Game {
         match hurt {
             Hurt::Shrugged => return,
             Hurt::Hurt | Hurt::Shield => {
+                self.sound(Sound::BossHit);
                 info!("storm cloud hit: {hp} left");
                 self.score += 150;
                 self.burst(at, V2::new(3.0, 3.0), 8, [255, 235, 140], 16.0);
@@ -1659,6 +1754,7 @@ impl Game {
                 }
             }
             Hurt::Dead => {
+                self.sound(Sound::BossDown);
                 info!("storm cloud beaten");
                 self.score += 4000;
                 self.storm = None;
@@ -1700,11 +1796,13 @@ impl Game {
         match hurt {
             Hurt::Shrugged => return,
             Hurt::Hurt | Hurt::Shield => {
+                self.sound(Sound::BossHit);
                 info!("weathercock hit: {hp} left");
                 self.score += 150;
                 self.burst(at, V2::new(3.0, 3.0), 8, [235, 70, 50], 16.0);
             }
             Hurt::Dead => {
+                self.sound(Sound::BossDown);
                 info!("weathercock beaten");
                 self.score += 4000;
                 self.vane = None;
@@ -1730,6 +1828,7 @@ impl Game {
         match hurt {
             Hurt::Shrugged => return,
             Hurt::Hurt | Hurt::Shield => {
+                self.sound(Sound::BossHit);
                 info!("{kind:?} hit: {hp} left");
                 self.score += 100;
                 self.burst(at, half, 8, body, 16.0);
@@ -1738,6 +1837,7 @@ impl Game {
                 }
             }
             Hurt::Dead => {
+                self.sound(Sound::BossDown);
                 info!("{kind:?} beaten");
                 self.score += 2000;
                 self.boss = None;
@@ -1843,6 +1943,7 @@ impl Game {
     /// The floor is done: the balls go, and the tower turns (straight floors) or the
     /// next floor simply loads (the arc and roof previews).
     fn clear_floor(&mut self, t: f32) {
+        self.sound(Sound::Clear);
         self.ghosts.clear();
         self.capsules.clear();
         self.bolts.clear();

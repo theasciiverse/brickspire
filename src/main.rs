@@ -4,11 +4,12 @@
 //! The paddle already runs on a general path, so `--path arc` and `--path circle`
 //! preview the mini-boss balcony and the roof ring on the same field.
 //!
-//! Run: `cargo run --release [-- --path line|arc|circle] [--floor N] [--glyphs]`
+//! Run: `cargo run --release [-- --path line|arc|circle] [--floor N] [--glyphs] [--mute]`
 //! (`RUST_LOG=debug ... 2>brickspire.log` for a session log). Snapshot without a
 //! terminal: `cargo run --release -- --snapshot out.ppm [--size 100x30] [--secs t]
 //! [--path P] [--floor N] [--glyphs] [--turn F]` autoplays for `t` seconds and renders one frame as an image.
 
+mod audio;
 mod boss;
 mod game;
 mod glyph;
@@ -113,6 +114,7 @@ fn run() -> io::Result<()> {
     info!("start: kitty keyboard = {kitty}, path {:?}", mode_arg());
 
     let mut game = new_game();
+    let mut audio = audio::Audio::new(std::env::args().any(|a| a == "--mute"));
     let mut input = Input::new(kitty);
     let mut acc = 0.0f32;
     let mut last = Instant::now();
@@ -144,6 +146,10 @@ fn run() -> io::Result<()> {
             game = new_game();
             paused = false;
         }
+        if std::mem::take(&mut input.mute) {
+            audio.toggle_mute();
+            info!("sound {}", if audio.muted { "off" } else { "on" });
+        }
         if std::mem::take(&mut input.graphics) {
             glyphs = !glyphs;
             info!("graphics: {}", if glyphs { "glyphs" } else { "pixels" });
@@ -167,6 +173,9 @@ fn run() -> io::Result<()> {
         while acc >= STEP {
             let fire = std::mem::take(&mut input.fire);
             game.step(steer, fire);
+            for s in game.events.drain(..) {
+                audio.play(s);
+            }
             acc -= STEP;
         }
         if paused {
@@ -311,7 +320,7 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
     if area.height > 4 {
         let pad = if input.pad_name.is_some() { " · pad" } else { "" };
         let help = format!(
-            " ←/→ mouse pad · space launch · p pause · r restart · n skip · g graphics · q quit [{}{}]",
+            " ←/→ mouse pad · space launch · p pause · r restart · n skip · g graphics · m sound · q quit [{}{}]",
             input.keys_note(),
             pad
         );

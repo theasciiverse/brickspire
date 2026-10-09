@@ -195,6 +195,7 @@ cargo run --release -- --floor 31           # the Sea Tower (floors 31 to 40: th
 cargo run --release -- --floor 41           # the Brickspire (floors 41 to 50: the apprentice on 45, the Mason on 50)
 cargo run --release -- --floor 10 --roof weathercock   # any roof boss on any roof: storm, rook, bell, weathercock, mason
 cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
+cargo run --release -- --mute               # no sound (m flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
 cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5] [--map 4 [--leave 0.5]]   # headless frame (--map T: the map after this tower, T s in; --leave L: L s into going on)
 cargo test --release
@@ -234,9 +235,23 @@ cargo test --release
   paddle a heavy bar `╺━━╸` that tilts with its path; the ball a pipe ring at its
   true size (`()`, `╭─╮ ╰─╯`, wider on big terminals). Scaled so a brick is whole cells
   (4x1 at the smallest, a 67x19 field that fits 80x24; 8x2 next), grid aligned to cells.
+- `audio.rs`: every sound synthesised at start-up (rodio, no audio files), after
+  SIGPIPE's `audio.rs`; the rules ask for `game::Sound`s each step.
 - `input.rs`: keys (exact or timing), mouse chase and click, gamepad (stick aims on the roof).
 
 ## Status
+
+Sound (2026-10-09, overnight; step 6 begun): synthesised effects, no files. The
+paddle's wooden tock, a tick off the walls, each brick broken in a row since the
+ball left the paddle a note higher up a pentatonic scale (a run climbs), a metal
+ping for a hit that didn't break (steel, ice), a higher bell off gilt; bosses
+thump when hit and crumble when beaten, spit with a short chirp; the paddle
+buzzes when stunned, webbed, iced or chipped; thunder for the Storm Cloud's bolt,
+a deep bell for the Great Bell's toll, rushing wings for the Rook's swoop, a
+whistle for the Mason's lob, tick-tock as clockwork winds back in; jingles for a
+power-up, a cleared floor, a lost ball, a climbed tower, game over; a rush going
+on from the map. No music yet. Not yet heard on a real device overnight (only
+checked that every sound renders in range): needs a listen.
 
 Ten floors a tower (2026-10-09, overnight): four floors, the mini-boss's balcony,
 four more, the roof; 50 floors in all. Beating a mini-boss now turns the tower to

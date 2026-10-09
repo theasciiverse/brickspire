@@ -97,7 +97,9 @@ pub struct Input {
     pub skip: bool,
     /// Flip between pixel and glyph graphics.
     pub graphics: bool,
-    /// Launch (or, later, fire the laser). Taken by the game each step.
+    /// Sound on or off.
+    pub mute: bool,
+    /// Launch, let go of a caught ball, fire the chisels. Taken by the game each step.
     pub fire: bool,
     #[cfg(feature = "gamepad")]
     gilrs: Option<gilrs::Gilrs>,
@@ -148,6 +150,7 @@ impl Input {
             pause: false,
             skip: false,
             graphics: false,
+            mute: false,
             fire: false,
             #[cfg(feature = "gamepad")]
             gilrs,
@@ -190,6 +193,7 @@ impl Input {
             KeyCode::Char('p') => self.pause = true,
             KeyCode::Char('n') => self.skip = true,
             KeyCode::Char('g') => self.graphics = true,
+            KeyCode::Char('m') => self.mute = true,
             KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('k') => self.fire = true,
             _ => {}
         }
