@@ -9,6 +9,8 @@
 //! pixel mode; only the drawing differs.
 
 use crate::game::{self, Game, Kind, Mode, BALL_R, BRICK_H, LEDGE, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, WORLD_H, WORLD_W};
+use crate::boss::{self, Gargoyle};
+use crate::game::{Balcony, State};
 use crate::physics::{Path, V2};
 use crate::tower::{self, BrickHere, Faces, Sample};
 use crate::render::View;
@@ -24,6 +26,9 @@ const BRASS: Color = Color::Rgb(220, 165, 60);
 const PADDLE_END: Color = Color::Rgb(40, 210, 190);
 const PADDLE_BODY: Color = Color::Rgb(240, 175, 60);
 const RAIL: Color = Color::Rgb(70, 90, 125);
+const FIRE: Color = Color::Rgb(255, 140, 40);
+const GARGOYLE_STONE: Color = Color::Rgb(175, 170, 185);
+const GARGOYLE_WING: Color = Color::Rgb(120, 112, 140);
 const PIPE_BG: Color = Color::Rgb(38, 46, 64);
 const LEDGE_STONE: Color = Color::Rgb(175, 165, 145);
 const LEDGE_SHADOW: Color = Color::Rgb(55, 50, 56);
@@ -129,6 +134,48 @@ fn line(t: V2, heavy: bool) -> &'static str {
     }
 }
 
+/// The Gargoyle, two rows tall (smallest size) or four, wings up and wings down.
+/// Spaces are see-through; columns `HEAD` are head and body, the rest wings.
+const GARGOYLE_SMALL: [[&str; 2]; 2] = [["╲╲(●▾●)╱╱", "  ╰┴─┴╯  "], ["─╮(●▾●)╭─", "╱╱╰┴─┴╯╲╲"]];
+const GARGOYLE_BIG: [[&str; 4]; 2] = [
+    ["╲╲      ╲ ╱      ╱╱", " ╲╲╲   (●▾●)   ╱╱╱ ", "   ╲╲─╮│   │╭─╱╱   ", "       ╰┴───┴╯     "],
+    ["        ╲ ╱        ", "───────(●▾●)───────", "╱╱╱  ╭─│   │─╮  ╲╲╲", "       ╰┴───┴╯     "],
+];
+
+fn draw_gargoyle(cv: &mut Canvas, g: &Gargoyle) {
+    let rows_fit = (boss::HALF.y * cv.view.s).round() as i32;
+    let up = g.flap() < 0.0;
+    let sprite: Vec<&str> = if rows_fit >= 4 {
+        GARGOYLE_BIG[if up { 0 } else { 1 }].to_vec()
+    } else {
+        GARGOYLE_SMALL[if up { 0 } else { 1 }].to_vec()
+    };
+    let width = sprite.iter().map(|l| l.chars().count()).max().unwrap_or(0) as i32;
+    let head = if rows_fit >= 4 { 7..=11 } else { 2..=6 };
+    let blink = g.hurt > 0.0 && (g.hurt * 12.0) as i32 % 2 == 0;
+    let px = g.p.x * cv.view.s + cv.view.ox;
+    let py = (g.p.y * cv.view.s + cv.view.oy) / 2.0;
+    let (c0, r0) = ((px - width as f32 / 2.0).round() as i32, (py - sprite.len() as f32 / 2.0).round() as i32);
+    for (r, line) in sprite.iter().enumerate() {
+        for (c, ch) in line.chars().enumerate() {
+            if ch == ' ' {
+                continue;
+            }
+            let fg = if blink {
+                Color::Rgb(255, 255, 255)
+            } else if ch == '●' {
+                if g.aiming() { Color::Rgb(255, 220, 120) } else { Color::Rgb(255, 60, 40) }
+            } else if head.contains(&(c as i32)) {
+                GARGOYLE_STONE
+            } else {
+                GARGOYLE_WING
+            };
+            let mut buf = [0u8; 4];
+            cv.put(c0 + c as i32, r0 + r as i32, ch.encode_utf8(&mut buf), fg, None);
+        }
+    }
+}
+
 /// What a cell of the tower shows.
 #[derive(Clone, Copy, PartialEq)]
 enum Part {
@@ -138,6 +185,11 @@ enum Part {
     Ledge,
     Wall,
     Brick(BrickHere),
+    /// The boss balcony: walkway, rail (with its direction in cells), and the shadow
+    /// it casts on the wall below.
+    Walkway,
+    Rail(V2),
+    Shadow,
 }
 
 fn lit(c: Color, k: f32) -> Color {
@@ -168,6 +220,18 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
             Some(s) if s.u < FIELD_X0 || s.u >= FIELD_X1 => Part::Pilaster,
             Some(s) if s.v >= LEDGE => Part::Ledge,
             Some(s) => faces.brick(game, s.n, s.u, s.v).map_or(Part::Wall, Part::Brick),
+        })
+        .zip(samples.iter())
+        .map(|(part, s)| {
+            let Some(s) = s.filter(|s| part != Part::Sky && faces.balcony(game, s.n)) else { return part };
+            let (centre, rad) = game::balcony_arc();
+            let off = V2::new(s.u, s.v) - centre;
+            match game::balcony_at(off.len(), rad) {
+                Balcony::Open => part,
+                Balcony::Walkway(_) => Part::Walkway,
+                Balcony::Rail(_) => Part::Rail(V2::new(-off.y * cv.view.s, off.x * cv.view.s / 2.0)),
+                Balcony::Shadow => Part::Shadow,
+            }
         })
         .collect();
     let at = |c: i32, r: i32| if c < 0 || r < 0 || c >= w || r >= h { Part::Sky } else { parts[(r * w + c) as usize] };
@@ -209,6 +273,9 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
                     }
                 }
                 Part::Ledge => cv.put(c, r, "▒", lit(LEDGE_STONE, k), Some(lit(LEDGE_SHADOW, k))),
+                Part::Walkway => cv.put(c, r, "░", lit(LEDGE_STONE, k), Some(lit(LEDGE_SHADOW, k))),
+                Part::Rail(t) => cv.put(c, r, line(t, false), lit(STEEL, k), Some(lit(PIPE_BG, k * 0.6))),
+                Part::Shadow => cv.bg(c, r, lit(wall, 0.4)),
                 Part::Brick(b) => {
                     let here = at(c, r);
                     let (left, right) = (!same(here, at(c - 1, r)), !same(here, at(c + 1, r)));
@@ -220,7 +287,7 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
                         (lit(dim(base, 0.3), k), lit(rgb(base), k))
                     };
                     let double = match b.kind {
-                        Kind::Plain(_) => false,
+                        Kind::Plain(_) | Kind::Stone => false,
                         Kind::Steel => b.hp > 1,
                         Kind::Gilt => true,
                     };
@@ -279,8 +346,12 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         }
     }
 
-    if game.arena.mode == Mode::Line {
+    if game.arena.mode != Mode::Circle {
         draw_tower(&mut cv, game);
+        // the paddle's path along the balcony, once the tower has stopped turning
+        if game.arena.mode == Mode::Arc && !matches!(game.state, State::Clear { .. }) {
+            trace(&mut cv, &game.arena.path, RAIL);
+        }
     } else {
         // the field: the tower's face, or the round roof
         for r in 0..h {
@@ -342,7 +413,7 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
                 (dim(base, 0.3), rgb(base))
             };
             let double = match brick.kind {
-                Kind::Plain(_) => false,
+                Kind::Plain(_) | Kind::Stone => false,
                 Kind::Steel => brick.hp > 1,
                 Kind::Gilt => true,
             };
@@ -380,7 +451,22 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         cv.put(c, r, sym, dim(part.rgb, (part.life / 0.5).min(1.0)), None);
     }
 
-    // the paddle: a heavy bar, one stroke per cell along it, teal at the ends
+    if let Some(g) = &game.boss {
+        draw_gargoyle(&mut cv, g);
+    }
+    for shot in &game.shots {
+        let (c, r) = cv.cell(shot.p);
+        cv.put(c, r, "*", FIRE, None);
+    }
+
+    // the paddle: a heavy bar, one stroke per cell along it, teal at the ends (grey
+    // and flickering while stunned)
+    let (body, ends) = if game.stun > 0.0 {
+        let grey = if (game.time * 20.0) as i32 % 2 == 0 { Color::Rgb(90, 90, 100) } else { Color::Rgb(160, 160, 170) };
+        (grey, grey)
+    } else {
+        (PADDLE_BODY, PADDLE_END)
+    };
     let (a, b, _) = game.paddle_segment();
     let t = (b - a).norm();
     let sym = line(V2::new(t.x * view.s, t.y * view.s / 2.0), true);
@@ -389,13 +475,13 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         let u = i as f32 / steps as f32;
         let (c, r) = cv.cell(a + (b - a) * u);
         let end = (u - 0.5).abs() * 2.0 * PADDLE_HALF > PADDLE_HALF - 2.0;
-        cv.put(c, r, sym, if end { PADDLE_END } else { PADDLE_BODY }, None);
+        cv.put(c, r, sym, if end { ends } else { body }, None);
     }
     // cap a level paddle with half-strokes so its ends read as rounded
     let ((ca, ra), (cb, rb)) = (cv.cell(a), cv.cell(b));
     if ra == rb {
-        cv.put(ca.min(cb), ra, "╺", PADDLE_END, None);
-        cv.put(ca.max(cb), rb, "╸", PADDLE_END, None);
+        cv.put(ca.min(cb), ra, "╺", ends, None);
+        cv.put(ca.max(cb), rb, "╸", ends, None);
     }
 
     // balls: a little pipe ring at the ball's true size (`╭─╮ ╰─╯` when it is two
@@ -424,6 +510,21 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
                 };
                 cv.put(c0 + c, r0 + r, sym, fg, None);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gargoyle_sprites_are_square() {
+        for frame in GARGOYLE_SMALL {
+            assert!(frame.iter().all(|l| l.chars().count() == 9), "{frame:?}");
+        }
+        for frame in GARGOYLE_BIG {
+            assert!(frame.iter().all(|l| l.chars().count() == 19), "{frame:?}");
         }
     }
 }

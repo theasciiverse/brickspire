@@ -163,6 +163,7 @@ cargo run --release                         # play
 cargo run --release -- --path arc           # preview the mini-boss arc on the same field
 cargo run --release -- --path circle        # preview the roof ring (a small test block)
 cargo run --release -- --floor 3            # start on floor 3
+cargo run --release -- --floor 5            # the Gargoyle's balcony (first mini-boss)
 cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
 cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5]   # headless frame
@@ -176,7 +177,8 @@ cargo test --release
 - `game.rs`: the rules at a fixed 120 Hz step; `Arena` per mode, bricks on a grid,
   paddle bat (normal turned up to 60 degrees by where it hits), the 18% minimum share
   on straight floors, lives, score, particles, and the autoplay `Pilot`.
-- `levels.rs`: floors as text grids.
+- `levels.rs`: floors as text grids; a `boss` floor puts the paddle on the balcony arc.
+- `boss.rs`: the Gargoyle (movement, spitting, hits, when it lays a shield).
 - `tower.rs`: the tower's geometry, shared by both renderers: which floor's face, and
   where on it, lies under a screen point for a camera angle; the bricks of nearby floors.
 - `render.rs`: pixel mode, per-pixel half-block shading of the world, scaled to any terminal.
@@ -189,17 +191,23 @@ cargo test --release
 
 ## Status
 
-Build step 2 done (2026-10-09): the turning tower. Four faces to a turn, each 14 units
-(a quarter of a face) higher than the last, so face n + 4 stands on face n and the
-spiral tiles the cylinder. The front face is the flat play field; its walls are the
-pilasters between faces and its top wall the lintel, with a stone ledge along the
-bottom that steps up face to face. Past the front face the cylinder curves away: the
-next floor's real bricks peek round the right edge, higher; the cleared floor (its gilt
-left) round the left, lower; on tall terminals the floors above and below show too.
-Clearing a floor holds for 0.6 s, then the tower turns a quarter and the camera rises a
-step over 1.8 s. Pixel and pipe graphics both draw it.
+Build step 3 done (2026-10-09): arc mode and the first mini-boss. Floor 5 is the
+Gargoyle's Balcony. The tower turns onto it like any floor, its balcony swinging round
+with its face; the camera pulls back a little (pixel graphics), and the paddle runs on
+the balcony's arc (a quarter circle, bottom 2 units above the straight paddle line so
+the stone walkway and steel balustrade fit beneath). The Gargoyle (12 hits) flaps to
+and fro above the bricks, faster as it is hurt; spits fireballs at the paddle (a hit
+stuns it for 1 s, greyed and flickering, rather than costing a life); blinks for 0.9 s
+after each hit, during which hits don't count; and every third hit lays a row of stone
+bricks beneath itself, which stay put as it flies on. Beating it clears the floor.
+Autoplay needs 30 to 60 s and two lives to win (logged 2026-10-09), so the balance is a
+first guess for David to tune by playing. `--path` now forces one path on every floor.
 
-Step 1 (same day): flat floors playable with keys, mouse and gamepad; four floors,
-ordinary, steel and gilt bricks, three lives, score, pixel and glyph graphics. The
-paddle physics already runs on all three paths; `--path arc` / `--path circle` preview
-them on a plain field (no tower). Next: step 3, arc mode and the first mini-boss.
+Step 2 (same day): the turning tower. Four faces to a turn, each 14 units higher than
+the last, so the spiral tiles the cylinder; the front face is the flat field, walls as
+pilasters, a lintel, a stone ledge stepping up face to face; neighbours peek round the
+curve; clearing a floor holds 0.6 s, then the tower turns a quarter over 1.8 s.
+
+Step 1 (same day): flat floors playable with keys, mouse and gamepad; ordinary, steel
+and gilt bricks, three lives, score, pixel and pipe graphics. Next: step 4, circle mode
+on the roof and the first tower boss.

@@ -3,6 +3,7 @@
 //! A fixed step of `STEP` seconds. The paddle moves first, then each ball is swept
 //! along its motion, bouncing off whatever it touches first, until the step is used up.
 
+use crate::boss::{self, Gargoyle, Hurt, Shot};
 use crate::levels::{self, Floor};
 use crate::physics::{self, Hit, Path, V2};
 use log::info;
@@ -46,6 +47,10 @@ const MIN_SHARE: f32 = 0.18;
 const AUTO_LAUNCH: f32 = 5.0;
 const LIVES: u32 = 3;
 const GRAVITY: f32 = 60.0;
+/// Seconds the paddle is stunned by a fireball.
+const STUN: f32 = 1.0;
+/// How far the camera pulls back on a boss floor (pixel graphics).
+const BOSS_ZOOM: f32 = 0.86;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Mode {
@@ -71,7 +76,8 @@ impl Arena {
                 let sweep = PI / 2.0;
                 let half_w = (FIELD_X1 - FIELD_X0) / 2.0;
                 let r = half_w / (sweep / 2.0).sin();
-                let bottom = PADDLE_Y + 1.0;
+                // high enough that the balcony walkway and its rail fit below it
+                let bottom = PADDLE_Y - 2.0;
                 Path::Arc { c: V2::new(WORLD_W / 2.0, bottom - r), r, a0: PI / 2.0 - sweep / 2.0, a1: PI / 2.0 + sweep / 2.0 }
             }
             Mode::Circle => Path::Circle { c: V2::new(WORLD_W / 2.0, 29.0), r: 25.0 },
@@ -92,6 +98,41 @@ impl Arena {
     }
 }
 
+/// The centre and radius of the boss balcony's arc (the paddle's path there).
+pub fn balcony_arc() -> (V2, f32) {
+    match Arena::new(Mode::Arc).path {
+        Path::Arc { c, r, .. } => (c, r),
+        _ => unreachable!(),
+    }
+}
+
+/// Where a point on a boss face lies relative to the balcony, from its distance `d`
+/// to the arc's centre.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Balcony {
+    /// Above the paddle's path: the tower face as usual.
+    Open,
+    /// The stone walkway under the path, `k` 0 at its inner edge to 1 at the rail.
+    Walkway(f32),
+    /// The steel balustrade along its edge, `k` 0 to 1 across it.
+    Rail(f32),
+    /// The tower wall below, in the balcony's shadow.
+    Shadow,
+}
+
+pub fn balcony_at(d: f32, r: f32) -> Balcony {
+    let (walk0, rail0, rail1) = (r + PADDLE_TH + 0.3, r + 4.5, r + 5.7);
+    if d < walk0 {
+        Balcony::Open
+    } else if d < rail0 {
+        Balcony::Walkway((d - walk0) / (rail0 - walk0))
+    } else if d < rail1 {
+        Balcony::Rail((d - rail0) / (rail1 - rail0))
+    } else {
+        Balcony::Shadow
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Kind {
     /// An ordinary brick in one of eight colours.
@@ -100,6 +141,8 @@ pub enum Kind {
     Steel,
     /// Gilt: can't be broken.
     Gilt,
+    /// Stone laid by the Gargoyle as a shield: one hit.
+    Stone,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -170,6 +213,14 @@ pub struct Game {
     pub speed: f32,
     pub time: f32,
     pub particles: Vec<Particle>,
+    /// The mini-boss on a boss floor (gone once beaten), its fireballs, and how long
+    /// the paddle has left stunned by one.
+    pub boss: Option<Gargoyle>,
+    pub boss_floor: bool,
+    pub shots: Vec<Shot>,
+    pub stun: f32,
+    /// A paddle path forced for every floor (`--path`), instead of each floor's own.
+    forced: Option<Mode>,
     seed: u32,
 }
 
@@ -179,6 +230,7 @@ enum Thing {
     Wall,
     Brick(usize),
     Paddle,
+    Boss,
 }
 
 pub fn brick_rgb(kind: Kind) -> [u8; 3] {
@@ -195,6 +247,7 @@ pub fn brick_rgb(kind: Kind) -> [u8; 3] {
         ][c as usize % 8],
         Kind::Steel => [150, 160, 175],
         Kind::Gilt => [240, 185, 45],
+        Kind::Stone => [150, 135, 118],
     }
 }
 
@@ -210,6 +263,7 @@ pub fn parse(def: &Floor) -> (usize, usize, Vec<Option<Kind>>) {
                 .map(|ch| match ch {
                     'S' => Some(Kind::Steel),
                     'G' => Some(Kind::Gilt),
+                    's' => Some(Kind::Stone),
                     _ => Some(Kind::Plain("wocgrbmy".find(ch)? as u8)),
                 })
                 .collect();
@@ -231,9 +285,10 @@ fn smoothstep(x: f32) -> f32 {
 }
 
 impl Game {
-    pub fn new(mode: Mode) -> Game {
+    /// A new game; `forced` puts the paddle on one kind of path for every floor.
+    pub fn new(forced: Option<Mode>) -> Game {
         let mut g = Game {
-            arena: Arena::new(mode),
+            arena: Arena::new(forced.unwrap_or(Mode::Line)),
             floor: 0,
             floor_name: "",
             origin: V2::default(),
@@ -248,6 +303,11 @@ impl Game {
             speed: SPEED_START,
             time: 0.0,
             particles: Vec::new(),
+            boss: None,
+            boss_floor: false,
+            shots: Vec::new(),
+            stun: 0.0,
+            forced,
             seed: 0x9e37_79b9,
         };
         g.load_floor(0);
@@ -255,13 +315,21 @@ impl Game {
     }
 
     fn floor_def(&self, n: usize) -> &'static Floor {
-        if self.arena.mode == Mode::Circle { &levels::ROOF_TEST } else { &levels::FLOORS[n % levels::FLOORS.len()] }
+        if self.forced == Some(Mode::Circle) { &levels::ROOF_TEST } else { &levels::FLOORS[n % levels::FLOORS.len()] }
+    }
+
+    /// The paddle's path on floor `n`: the balcony's arc on a boss floor.
+    fn floor_mode(&self, n: usize) -> Mode {
+        self.forced.unwrap_or(if self.floor_def(n).boss { Mode::Arc } else { Mode::Line })
     }
 
     pub fn load_floor(&mut self, n: usize) {
         let def = self.floor_def(n);
         self.floor = n;
         self.floor_name = def.name;
+        self.arena = Arena::new(self.floor_mode(n));
+        self.boss_floor = def.boss;
+        self.boss = def.boss.then(Gargoyle::new);
         let (cols, rows, cells) = parse(def);
         (self.cols, self.rows) = (cols, rows);
         let (w, h) = (self.cols as f32 * BRICK_W, self.rows as f32 * BRICK_H);
@@ -281,6 +349,8 @@ impl Game {
 
     fn serve(&mut self) {
         self.balls.clear();
+        self.shots.clear();
+        self.stun = 0.0;
         self.speed = SPEED_START;
         if self.arena.path.wraps() {
             self.paddle.s = 0.0;
@@ -381,7 +451,9 @@ impl Game {
             }
             _ => {}
         }
+        self.stun = (self.stun - STEP).max(0.0);
         self.move_paddle(steer);
+        self.update_boss();
         if let State::Serve { wait } = self.state {
             let wait = wait + STEP;
             if fire || wait >= AUTO_LAUNCH {
@@ -402,8 +474,12 @@ impl Game {
         if self.balls.is_empty() {
             self.lives = self.lives.saturating_sub(1);
             info!("life lost: {} left", self.lives);
+            self.shots.clear();
             self.state = State::Lost { t: 1.2 };
-        } else if self.left() == 0 {
+        } else if self.boss_floor && self.boss.is_none() {
+            info!("floor {} clear, boss beaten: score {}", self.floor + 1, self.score);
+            self.clear_floor(0.0);
+        } else if !self.boss_floor && self.left() == 0 {
             info!("floor {} clear: score {}", self.floor + 1, self.score);
             self.clear_floor(0.0);
         }
@@ -420,13 +496,17 @@ impl Game {
     fn move_paddle(&mut self, steer: Steer) {
         let path = self.arena.path;
         let chase = |to: f32| (path.delta(self.paddle.s, to) / STEP).clamp(-PADDLE_CHASE, PADDLE_CHASE);
-        self.paddle.vel = match steer {
+        self.paddle.vel = if self.stun > 0.0 {
+            0.0
+        } else {
+            match steer {
             Steer::Move(k) => k.clamp(-1.0, 1.0) * PADDLE_SPEED,
             Steer::Toward(p) => chase(path.nearest(p)),
             Steer::Aim(dir) => match path {
                 Path::Circle { c, r } if dir.len() > 0.0 => chase(path.nearest(c + dir.norm() * r)),
                 _ => dir.x.clamp(-1.0, 1.0) * PADDLE_SPEED,
             },
+            }
         };
         self.paddle.s = path.keep(self.paddle.s + self.paddle.vel * STEP, PADDLE_HALF);
         // a paddle moving into a ball pushes it out and bats it
@@ -477,6 +557,10 @@ impl Game {
                     self.hit_brick(b);
                 }
                 Thing::Paddle => self.bat(i),
+                Thing::Boss => {
+                    self.balls[i].v = ball.v.reflect(hit.n);
+                    self.hit_boss();
+                }
             }
             self.balls[i].v = self.tidy(self.balls[i].v);
         }
@@ -528,6 +612,10 @@ impl Game {
                 }
             }
         }
+        if let Some(g) = &self.boss {
+            let (min, max) = g.bounds();
+            take(physics::sweep_box(p, d, min, max, BALL_R), Thing::Boss);
+        }
         let (a, b, n) = self.paddle_segment();
         let h = physics::sweep_capsule(p, d, a, b, PADDLE_TH + BALL_R).filter(|h| h.n.dot(n) > -0.3);
         take(h, Thing::Paddle);
@@ -569,6 +657,7 @@ impl Game {
         self.bricks[i] = None;
         self.score += match brick.kind {
             Kind::Plain(c) => 50 + 10 * c as u32,
+            Kind::Stone => 10,
             _ => 50 * (self.floor as u32 + 1),
         };
         let (min, max) = self.brick_box(i);
@@ -579,6 +668,112 @@ impl Game {
             let v = V2::new(a.cos(), a.sin()) * (8.0 + self.rand() * 18.0);
             let life = 0.4 + self.rand() * 0.5;
             self.particles.push(Particle { p, v, life, rgb });
+        }
+    }
+
+    fn burst(&mut self, at: V2, spread: V2, count: usize, rgb: [u8; 3], speed: f32) {
+        for _ in 0..count {
+            let p = at + V2::new((self.rand() - 0.5) * spread.x, (self.rand() - 0.5) * spread.y);
+            let a = self.rand() * 2.0 * PI;
+            let v = V2::new(a.cos(), a.sin()) * (speed * (0.3 + self.rand()));
+            let life = 0.4 + self.rand() * 0.6;
+            self.particles.push(Particle { p, v, life, rgb });
+        }
+    }
+
+    /// The boss flies and spits; its fireballs fly and may stun the paddle; and if
+    /// it flew into a ball, the ball is pushed back out.
+    fn update_boss(&mut self) {
+        let Some(mut g) = self.boss.take() else { return };
+        let live = self.state == State::Play;
+        let target = self.arena.path.point(self.paddle.s);
+        g.update(STEP, live, target, &mut self.shots);
+        let (min, max) = g.bounds();
+        for b in self.balls.iter_mut() {
+            if let Some((depth, n)) = physics::box_overlap(b.p, min, max, BALL_R) {
+                b.p += n * (depth + 1e-3);
+                if b.v.dot(n) < 0.0 {
+                    b.v = b.v.reflect(n);
+                }
+            }
+        }
+        self.boss = Some(g);
+        let (a, b, _) = self.paddle_segment();
+        let mut stunned = None;
+        let arena = &self.arena;
+        self.shots.retain_mut(|s| {
+            s.p += s.v * STEP;
+            if (s.p - physics::closest_on_segment(s.p, a, b)).len() < PADDLE_TH + boss::SHOT_R {
+                stunned = Some(s.p);
+                return false;
+            }
+            !arena.lost(s.p) && s.p.y < WORLD_H + 4.0
+        });
+        if let Some(at) = stunned {
+            info!("paddle stunned");
+            self.stun = STUN;
+            self.burst(at, V2::new(2.0, 1.0), 10, [255, 150, 40], 22.0);
+        }
+    }
+
+    fn hit_boss(&mut self) {
+        let Some(g) = self.boss.as_mut() else { return };
+        let hurt = g.hit();
+        let (at, hp) = (g.p, g.hp);
+        match hurt {
+            Hurt::Shrugged => return,
+            Hurt::Hurt | Hurt::Shield => {
+                info!("gargoyle hit: {hp} left");
+                self.score += 100;
+                self.burst(at, boss::HALF, 8, [150, 140, 160], 16.0);
+                if hurt == Hurt::Shield {
+                    self.lay_shield(at);
+                }
+            }
+            Hurt::Dead => {
+                info!("gargoyle beaten");
+                self.score += 2000;
+                self.boss = None;
+                self.shots.clear();
+                self.burst(at, boss::HALF * 2.0, 40, [150, 140, 160], 30.0);
+                self.burst(at, boss::HALF, 20, [255, 120, 40], 24.0);
+            }
+        }
+        self.speed = (self.speed + SPEED_PER_HIT).min(SPEED_MAX);
+    }
+
+    /// A row of stone bricks under the Gargoyle, wherever there is room for them.
+    fn lay_shield(&mut self, at: V2) {
+        let y = at.y + boss::HALF.y + 2.5 - self.origin.y;
+        let r = (y / BRICK_H).floor() as i32;
+        if r < 0 || r as usize >= self.rows {
+            return;
+        }
+        let c0 = ((at.x - 9.0 - self.origin.x) / BRICK_W).floor().max(0.0) as usize;
+        let c1 = (((at.x + 9.0 - self.origin.x) / BRICK_W).floor().max(0.0) as usize).min(self.cols - 1);
+        let mut laid = 0;
+        for c in c0..=c1 {
+            let i = r as usize * self.cols + c;
+            let (min, max) = self.brick_box(i);
+            let in_the_way = self.balls.iter().any(|b| physics::box_overlap(b.p, min, max, BALL_R + 0.5).is_some());
+            if self.bricks[i].is_none() && !in_the_way {
+                self.bricks[i] = Some(Brick { kind: Kind::Stone, hp: 1, flash: 0.15 });
+                laid += 1;
+            }
+        }
+        info!("gargoyle lays a shield of {laid} stones");
+    }
+
+    /// How far the camera has pulled back: further on a boss floor, eased during
+    /// the turn to or from one.
+    pub fn zoom(&self) -> f32 {
+        let z = |n: usize| if self.floor_def(n).boss { BOSS_ZOOM } else { 1.0 };
+        match self.state {
+            State::Clear { t } if self.arena.mode != Mode::Circle => {
+                let k = smoothstep((t - CLEAR_HOLD) / TURN_TIME);
+                z(self.floor) + (z(self.floor + 1) - z(self.floor)) * k
+            }
+            _ => z(self.floor),
         }
     }
 
@@ -594,7 +789,8 @@ impl Game {
                 *b = None;
             }
         }
-        if self.arena.mode == Mode::Line {
+        self.boss = None;
+        if self.arena.mode != Mode::Circle {
             self.clear_floor(CLEAR_HOLD);
         } else {
             self.load_floor(self.floor + 1);
@@ -605,6 +801,7 @@ impl Game {
     /// next floor simply loads (the arc and roof previews).
     fn clear_floor(&mut self, t: f32) {
         self.balls.clear();
+        self.shots.clear();
         self.state = State::Clear { t };
     }
 
@@ -612,7 +809,7 @@ impl Game {
     /// the turn to the next one.
     pub fn camera(&self) -> f32 {
         let turn = match self.state {
-            State::Clear { t } if self.arena.mode == Mode::Line => smoothstep((t - CLEAR_HOLD) / TURN_TIME),
+            State::Clear { t } if self.arena.mode != Mode::Circle => smoothstep((t - CLEAR_HOLD) / TURN_TIME),
             _ => 0.0,
         };
         self.floor as f32 + turn
@@ -672,7 +869,7 @@ mod tests {
 
     #[test]
     fn no_tunnelling_through_a_column() {
-        let mut g = Game::new(Mode::Line);
+        let mut g = Game::new(Some(Mode::Line));
         g.state = State::Play;
         // absurdly fast, straight up a column of bricks
         let x = g.origin.x + BRICK_W * 6.5;
@@ -687,7 +884,7 @@ mod tests {
     #[test]
     fn paddle_aims_by_where_it_is_hit() {
         for mode in [Mode::Line, Mode::Arc, Mode::Circle] {
-            let mut g = Game::new(mode);
+            let mut g = Game::new(Some(mode));
             g.state = State::Play;
             let (a, b, n) = g.paddle_segment();
             let mid = (a + b) * 0.5;
@@ -713,7 +910,7 @@ mod tests {
     #[test]
     fn autoplay_stays_in_bounds_and_clears() {
         for mode in [Mode::Line, Mode::Arc, Mode::Circle] {
-            let mut g = Game::new(mode);
+            let mut g = Game::new(Some(mode));
             let start = g.left();
             play(&mut g, 120.0);
             assert!(g.floor > 0 || g.left() < start, "{mode:?}: no progress");
@@ -729,8 +926,29 @@ mod tests {
     }
 
     #[test]
+    fn the_balcony_floor_is_an_arc_and_the_gargoyle_can_be_beaten() {
+        let mut g = Game::new(None);
+        let boss = levels::FLOORS.iter().position(|f| f.boss).expect("a boss floor");
+        g.load_floor(boss);
+        assert_eq!(g.arena.mode, Mode::Arc);
+        assert!(g.boss.is_some());
+        // plenty of lives: this is about the fight being winnable, not the pilot
+        g.lives = 99;
+        let mut pilot = Pilot::new();
+        for _ in 0..(240.0 / STEP) as usize {
+            let s = pilot.steer(&g);
+            g.step(s, true);
+            if g.floor != boss {
+                break;
+            }
+        }
+        assert_eq!(g.floor, boss + 1, "the gargoyle was never beaten");
+        assert_eq!(g.arena.mode, Mode::Line);
+    }
+
+    #[test]
     fn losing_every_life_ends_the_game() {
-        let mut g = Game::new(Mode::Line);
+        let mut g = Game::new(Some(Mode::Line));
         for _ in 0..(60.0 / STEP) as usize {
             // the paddle hides in the corner
             g.step(Steer::Move(-1.0), true);

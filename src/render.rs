@@ -4,6 +4,8 @@
 //! scales to any terminal; round things (ball, paddle) get analytic anti-aliasing.
 
 use crate::game::{self, Game, Kind, Mode, LEDGE, BALL_R, BRICK_H, BRICK_W, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, PADDLE_TH, WALL, WORLD_H, WORLD_W};
+use crate::boss::{self, Gargoyle};
+use crate::game::Balcony;
 use crate::physics::{self, Path, V2};
 use crate::tower::{self, Faces};
 use ratatui::buffer::Buffer;
@@ -21,9 +23,10 @@ pub struct View {
 }
 
 impl View {
-    pub fn new(area: Rect) -> View {
+    /// The world fitted to `area`, then pulled back by `zoom` (1 is a snug fit).
+    pub fn new(area: Rect, zoom: f32) -> View {
         let (w, h) = (area.width as f32, area.height as f32 * 2.0);
-        let s = (w / WORLD_W).min(h / WORLD_H).max(0.01);
+        let s = (w / WORLD_W).min(h / WORLD_H).max(0.01) * zoom;
         View { area, s, ox: (w - WORLD_W * s) / 2.0, oy: (h - WORLD_H * s) / 2.0 }
     }
 
@@ -131,7 +134,20 @@ fn tower_face(game: &Game, faces: &Faces, cam: f32, p: V2, ps: f32, bg: Rgb) -> 
         masonry(V2::new(u, v), psx, psy)
     };
     // the plinth below the first floor is plain and darker
-    let c = if s.n < 0 && v >= FIELD_TOP { scale(masonry(V2::new(u, v), psx, psy), 0.7) } else { c };
+    let mut c = if s.n < 0 && v >= FIELD_TOP { scale(masonry(V2::new(u, v), psx, psy), 0.7) } else { c };
+    if faces.balcony(game, s.n) {
+        // the balcony curves round in front of this face, under the paddle's arc
+        let (centre, r) = game::balcony_arc();
+        let d = (V2::new(u, v) - centre).len();
+        c = match game::balcony_at(d, r) {
+            Balcony::Open if (d - r).abs() < psy * 0.6 => mix(c, [70.0, 90.0, 120.0], 0.6),
+            Balcony::Open => c,
+            Balcony::Walkway(k) if k * 4.0 < psy => [200.0, 190.0, 170.0],
+            Balcony::Walkway(k) => mix([150.0, 140.0, 125.0], [90.0, 84.0, 82.0], k),
+            Balcony::Rail(k) => pipe(k, u, psx),
+            Balcony::Shadow => scale(c, 0.4),
+        };
+    }
     scale(c, s.light)
 }
 
@@ -189,9 +205,64 @@ fn scenery(game: &Game, p: V2, ps: f32, bg: Rgb) -> Rgb {
     c
 }
 
+/// The Gargoyle, in its own units (`l` from its centre, y down): stone head with
+/// horns and red eyes (glowing hot just before it spits), a squat body with claws,
+/// and scalloped wings beating up and down.
+fn gargoyle(g: &Gargoyle, l: V2) -> Option<Rgb> {
+    let stone = |y: f32| mix([175.0, 170.0, 185.0], [80.0, 76.0, 92.0], (y + 3.0) / 6.0);
+    let seg = |a: V2, b: V2, r: f32| (l - physics::closest_on_segment(l, a, b)).len() < r;
+    let ax = l.x.abs();
+    let eye = (V2::new(ax, l.y) - V2::new(0.6, -1.3)).len() < 0.45;
+    let mut c = if eye {
+        Some(if g.aiming() { [255.0, 220.0, 120.0] } else { [255.0, 60.0, 40.0] })
+    } else if (l - V2::new(0.0, -1.2)).len() < 1.5 || seg(V2::new(0.8, -2.2), V2::new(1.8, -3.3), 0.4) && l.x > 0.0 || seg(V2::new(-0.8, -2.2), V2::new(-1.8, -3.3), 0.4) && l.x < 0.0 {
+        Some(stone(l.y - 1.0))
+    } else if ((l.x / 2.4).powi(2) + ((l.y - 0.9) / 2.0).powi(2)) < 1.0 {
+        Some(stone(l.y))
+    } else if seg(V2::new(1.2, 2.4), V2::new(1.5, 3.1), 0.35) || seg(V2::new(-1.2, 2.4), V2::new(-1.5, 3.1), 0.35) {
+        Some([60.0, 56.0, 66.0])
+    } else if (1.6..7.0).contains(&ax) {
+        // a wing: from the shoulder out to a tip that rises and falls with the beat
+        let k = (ax - 1.6) / 5.4;
+        let tip = -1.8 + g.flap() * 1.6;
+        let top = -1.2 + (tip - -1.2) * k;
+        let scallop = 0.7 * (1.0 - ((ax - 1.6) * 2.2).cos().abs());
+        let bottom = 1.2 + (tip + 0.8 - 1.2) * k - scallop;
+        if l.y > top && l.y < bottom {
+            let rib = ((ax - 1.6) * 2.2 / std::f32::consts::PI).fract() < 0.12;
+            Some(if rib { [60.0, 56.0, 72.0] } else { mix([110.0, 104.0, 125.0], [70.0, 66.0, 84.0], (l.y - top) / (bottom - top).max(0.1)) })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if g.hurt > 0.0 {
+        // blinks white while hits don't count
+        let blink = if (g.hurt * 12.0) as i32 % 2 == 0 { 0.75 } else { 0.0 };
+        c = c.map(|c| mix(c, [255.0, 255.0, 255.0], blink));
+    }
+    c
+}
+
 /// What lies under world point `p` (pixel size `ps` in world units).
 fn shade(game: &Game, faces: &Faces, cam: f32, balls: &[V2], p: V2, ps: f32, bg: Rgb) -> Rgb {
-    let mut c = if game.arena.mode == Mode::Line { tower_face(game, faces, cam, p, ps, bg) } else { scenery(game, p, ps, bg) };
+    let mut c = if game.arena.mode != Mode::Circle { tower_face(game, faces, cam, p, ps, bg) } else { scenery(game, p, ps, bg) };
+    if let Some(g) = &game.boss {
+        let l = p - g.p;
+        if l.x.abs() < boss::HALF.x + 0.5 && l.y.abs() < boss::HALF.y + 1.0 {
+            if let Some(gc) = gargoyle(g, l) {
+                c = gc;
+            }
+        }
+    }
+    for shot in &game.shots {
+        let d = (p - shot.p).len();
+        if d < boss::SHOT_R + ps {
+            let fire = mix([255.0, 240.0, 150.0], [230.0, 60.0, 20.0], d / boss::SHOT_R);
+            c = mix(c, fire, (boss::SHOT_R - d) / ps + 0.5);
+        }
+    }
     // the paddle: a brass bar with teal ends, lit from above along its normal
     let (a, b, n) = game.paddle_segment();
     let q = physics::closest_on_segment(p, a, b);
@@ -200,7 +271,12 @@ fn shade(game: &Game, faces: &Faces, cam: f32, balls: &[V2], p: V2, ps: f32, bg:
     if d < PADDLE_TH + ps {
         let along = (q - (a + b) * 0.5).dot((b - a).norm()).abs();
         let across = off.dot(n) / PADDLE_TH; // +1 top face, -1 underside
-        let body = if along > PADDLE_HALF - 2.0 { [40.0, 200.0, 185.0] } else { [235.0, 170.0, 55.0] };
+        let mut body = if along > PADDLE_HALF - 2.0 { [40.0, 200.0, 185.0] } else { [235.0, 170.0, 55.0] };
+        if game.stun > 0.0 {
+            // stunned: greyed, flickering
+            let flick = if (game.time * 20.0) as i32 % 2 == 0 { 0.35 } else { 0.6 };
+            body = scale([170.0, 170.0, 180.0], flick + 0.3);
+        }
         let lit = mix(scale(body, 0.5), mix(body, [255.0, 250.0, 220.0], 0.5), (across + 1.0) / 2.0);
         c = mix(c, lit, (PADDLE_TH - d) / ps + 0.5);
     }

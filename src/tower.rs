@@ -12,7 +12,7 @@
 //! cleared round the left edge and lower, the next floor round the right and higher.
 //! Turning to the next floor is a tween of the camera, in floors, from `n` to `n + 1`.
 
-use crate::game::{self, Game, Kind, BRICK_H, BRICK_W, WORLD_H, WORLD_W};
+use crate::game::{self, Game, Kind, Mode, BRICK_H, BRICK_W, WORLD_H, WORLD_W};
 use crate::levels;
 use crate::physics::V2;
 use std::f32::consts::FRAC_PI_4;
@@ -86,6 +86,7 @@ pub struct BrickHere {
 
 struct Grid {
     n: i64,
+    boss: bool,
     origin: V2,
     cols: usize,
     rows: usize,
@@ -114,10 +115,19 @@ impl Faces {
                         }
                     }
                 }
-                Grid { n, origin: game::line_origin(cols), cols, rows, cells }
+                Grid { n, boss: def.boss, origin: game::line_origin(cols), cols, rows, cells }
             })
             .collect();
         Faces { floor, grids }
+    }
+
+    /// Does floor `n`'s face have the boss balcony in front of it?
+    pub fn balcony(&self, game: &Game, n: i64) -> bool {
+        if n == self.floor {
+            game.arena.mode == Mode::Arc
+        } else {
+            self.grids.iter().any(|g| g.n == n && g.boss)
+        }
     }
 
     pub fn brick(&self, game: &Game, n: i64, u: f32, v: f32) -> Option<BrickHere> {

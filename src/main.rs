@@ -9,6 +9,7 @@
 //! terminal: `cargo run --release -- --snapshot out.ppm [--size 100x30] [--secs t]
 //! [--path P] [--floor N] [--glyphs] [--turn F]` autoplays for `t` seconds and renders one frame as an image.
 
+mod boss;
 mod game;
 mod glyph;
 mod input;
@@ -43,11 +44,13 @@ fn arg(name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
 }
 
-fn mode_arg() -> Mode {
+/// `--path` forces one kind of paddle path on every floor; otherwise each floor has its own.
+fn mode_arg() -> Option<Mode> {
     match arg("--path").as_deref() {
-        Some("arc") => Mode::Arc,
-        Some("circle") => Mode::Circle,
-        _ => Mode::Line,
+        Some("arc") => Some(Mode::Arc),
+        Some("circle") => Some(Mode::Circle),
+        Some("line") => Some(Mode::Line),
+        _ => None,
     }
 }
 
@@ -66,7 +69,7 @@ fn glyphs_arg() -> bool {
 }
 
 fn make_view(game: &Game, area: Rect, glyphs: bool) -> View {
-    if glyphs { glyph::view(area, game.origin) } else { View::new(area) }
+    if glyphs { glyph::view(area, game.origin) } else { View::new(area, game.zoom()) }
 }
 
 fn draw_world(game: &Game, view: &View, glyphs: bool, buf: &mut Buffer) {
@@ -184,17 +187,26 @@ fn run() -> io::Result<()> {
 fn summary(game: &Game) -> String {
     let balls: Vec<String> = game.balls.iter().map(|b| format!("({:.1},{:.1} v {:.1},{:.1})", b.p.x, b.p.y, b.v.x, b.v.y)).collect();
     format!(
-        "floor {} {:?} state {:?} paddle s {:.1} ({:?}) balls [{}] speed {:.1} bricks {} lives {} score {}",
+        "floor {} {:?} state {:?} paddle s {:.1} ({:?}){} balls [{}] speed {:.1} bricks {} lives {} score {}{}",
         game.floor + 1,
         game.floor_name,
         game.state,
         game.paddle.s,
         game.arena.mode,
+        if game.stun > 0.0 { " stunned" } else { "" },
         balls.join(" "),
         game.speed,
         game.left(),
         game.lives,
-        game.score
+        game.score,
+        game.boss.as_ref().map_or(String::new(), |g| format!(
+            " gargoyle at {:.1},{:.1} hp {}/{} shots {}",
+            g.p.x,
+            g.p.y,
+            g.hp,
+            g.max,
+            game.shots.len()
+        ))
     )
 }
 
@@ -217,6 +229,15 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
         Span::styled(format!(" BEST {best:06} "), grey),
         Span::styled(format!(" {lives}"), bar.fg(Color::Rgb(235, 170, 55))),
     ]);
+    let mut top = top;
+    if let Some(g) = &game.boss {
+        let full = g.hp as usize;
+        top.spans.push(Span::styled(" GARGOYLE ", bar.fg(Color::Rgb(255, 90, 60)).add_modifier(Modifier::BOLD)));
+        top.spans.push(Span::styled(
+            format!("{}{}", "■".repeat(full), "·".repeat(g.max as usize - full)),
+            bar.fg(Color::Rgb(255, 90, 60)),
+        ));
+    }
     // clear first: a world cell is a `▀` whose top half takes the fg colour, so text
     // styled over it would leave coloured half-blocks wherever there is no glyph
     let top_row = Rect { height: 1, ..area };
