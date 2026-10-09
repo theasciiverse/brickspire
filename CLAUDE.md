@@ -185,7 +185,8 @@ cargo run --release -- --floor 3            # start on floor 3
 cargo run --release -- --floor 5            # the Gargoyle's balcony (first mini-boss)
 cargo run --release -- --floor 6            # the Storm Cloud's roof (first tower boss)
 cargo run --release -- --floor 7            # the Ivy Tower (floors 7 to 12: spider on 11, rook on 12)
-cargo run --release -- --floor 6 --roof weathercock   # the Weathercock instead (saved for a later tower)
+cargo run --release -- --floor 13           # the Bell Tower (floors 13 to 18: the Jack on 17, the Great Bell on 18)
+cargo run --release -- --floor 6 --roof weathercock   # any roof boss on any roof: storm, rook, bell, weathercock
 cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
 cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5] [--map 4]   # headless frame (--map T: the map after this tower, T s in)
@@ -203,10 +204,12 @@ cargo test --release
   its floors; floors as text grids, each a kind: plain (straight paddle), balcony
   (arc) or roof (ring, and which roof boss). Floors are numbered straight through
   all the towers.
-- `boss.rs`: the mini-bosses, one shape of fight in two kinds (the Gargoyle spits
-  fire and lays stone, the Spider spits web and spins web bricks), the Storm Cloud
-  (drifting, marking the ring, lightning, rain), the Rook (twig nest, hopping,
-  crouch and swoop, patching) and the Weathercock (turning, gusts, spin-ups, hits).
+- `boss.rs`: the mini-bosses, one shape of fight in three kinds (the Gargoyle spits
+  fire and lays stone, the Spider spits web and spins web bricks, the Jack strikes
+  volleys of chimes and winds clockwork), the Storm Cloud (drifting, marking the
+  ring, lightning, rain), the Rook (twig nest, hopping, crouch and swoop, patching),
+  the Great Bell (swinging, tolling rings of sound loud along its swing, lurching)
+  and the Weathercock (turning, gusts, spin-ups, hits).
 - `roof.rs`: the camera tilting up onto the roof, shared by both renderers (what a
   screen point sees: roof top, parapet, tower side or beyond), and the roof's contents.
 - `map.rs`: the map between towers, shared by both renderers: the five towers on a
@@ -222,6 +225,23 @@ cargo test --release
 - `input.rs`: keys (exact or timing), mouse chase and click, gamepad (stick aims on the roof).
 
 ## Status
+
+The Bell Tower (2026-10-09, overnight): warm sandstone at sunset. Clockwork bricks
+(brass, a cog turning in each): broken, one leaves a dotted outline that fills
+from the left as it winds back in over 9 s (it waits if a ball is on its cell); a
+floor is clear once every brick is down at the same moment, so the clockwork has
+to go together at the end. The Jack's Balcony: the Jack (12 hits), an iron
+striker in a helmet, marches to and fro in ticks like a clock's hand; on the hour
+it raises its hammer and strikes the little bell at its side, a chime flying at
+the paddle (stuns), one at first and volleys of up to three as it is hurt; every
+third hit it winds a row of clockwork. The Great Bell's Roof: the bell (14 hits)
+hangs in the middle, seen from above (bronze rings, the oak headstock across),
+swinging along an axis that slowly turns. It shivers, then tolls: a ring of sound
+spreads out, loud only in two arcs along its swing (front and back), and stuns
+the paddle where a loud arc crosses it; the paddle's ring is marked with pink
+dashes where the arcs will land, so the paddle steps into the quiet between them.
+Every third hit it lurches a quarter turn and tolls twice. The autopilot beats
+the Jack and the Bell in under a minute each.
 
 Build step 5 started (2026-10-09): towers. The game now has two of the five
 towers, numbered straight through (`--floor 7` is the Ivy Tower's ground floor);

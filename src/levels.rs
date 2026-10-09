@@ -4,7 +4,8 @@
 //! `.` empty; colours `w` white, `o` orange, `c` cyan, `g` green, `r` red, `b` blue,
 //! `m` magenta, `y` yellow; `S` steel (takes several hits); `G` gilt (can't be broken,
 //! and doesn't count towards clearing the floor); `s` stone (what the Gargoyle lays);
-//! `v` vine (slides along its row); `W` web (what the spider spins).
+//! `v` vine (slides along its row); `W` web (what the spider spins); `k` clockwork
+//! (winds itself back in a while after it is broken).
 //!
 //! Floors are numbered straight through all the towers (0 is the first tower's ground
 //! floor); after the last tower the climb starts again from the first.
@@ -27,6 +28,7 @@ pub enum FloorKind {
 pub enum RoofBoss {
     Storm,
     Rook,
+    Bell,
     Weathercock,
 }
 
@@ -35,6 +37,7 @@ pub enum RoofBoss {
 pub enum MiniKind {
     Gargoyle,
     Spider,
+    Jack,
 }
 
 /// A tower's look: sky, stone, the ground far below.
@@ -85,6 +88,19 @@ pub const TOWERS: &[Tower] = &[
         },
         mini: MiniKind::Spider,
         floors: IVY_TOWER,
+    },
+    Tower {
+        name: "The Bell Tower",
+        theme: Theme {
+            sky: [[52, 34, 78], [235, 128, 62]],
+            stars: 0.1,
+            wall: [72, 54, 38],
+            mortar: [40, 29, 21],
+            fields: [[58, 46, 20], [96, 76, 30]],
+            ivy: false,
+        },
+        mini: MiniKind::Jack,
+        floors: BELL_TOWER,
     },
 ];
 
@@ -284,6 +300,87 @@ pub const IVY_TOWER: &[Floor] = &[
             ".......",
         ],
         kind: FloorKind::Roof(RoofBoss::Rook),
+    },
+];
+
+/// The third tower, warm sandstone at sunset: clockwork bricks wind back in, the
+/// clock's jack strikes on the balcony, the Great Bell swings on the roof (in the
+/// middle, so the roof's bricks keep to the edges).
+pub const BELL_TOWER: &[Floor] = &[
+    Floor {
+        name: "The Bell Gate",
+        rows: &["ooooooooooooo", "yyyyyyyyyyyyy", "..k..k.k..k..", "rrrrr...rrrrr", ".............", "SS..S...S..SS"],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "The Escapement",
+        rows: &[
+            "S.k.k.k.k.k.S",
+            "yyyyyyyyyyyyy",
+            ".ooooo.ooooo.",
+            "..rrr...rrr..",
+            "k...........k",
+            "SSS..yyy..SSS",
+        ],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "The Clock Face",
+        rows: &[
+            "....yyyyy....",
+            "..yy..k..yy..",
+            ".y....k....y.",
+            ".y....kkk..y.",
+            ".y.........y.",
+            "..yy.....yy..",
+            "....yyyyy....",
+            "G...........G",
+        ],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "Gears",
+        rows: &[
+            ".kkk.....kkk.",
+            "kooo.....oook",
+            ".kkk.SSS.kkk.",
+            ".....rrr.....",
+            "bbbbbbbbbbbbb",
+            "S.S.S...S.S.S",
+        ],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "The Jack's Balcony",
+        // the top rows stay open: the jack marches there, and winds its gears in row 4
+        rows: &[
+            ".............",
+            ".............",
+            ".............",
+            ".............",
+            "S...........S",
+            "kkk..ooo..kkk",
+            "..o.......o..",
+        ],
+        kind: FloorKind::Balcony,
+    },
+    Floor {
+        name: "The Great Bell's Roof",
+        // round the edge: the bell swings through the middle
+        rows: &[
+            ".......",
+            "..kok..",
+            ".......",
+            "o.....o",
+            "y.....y",
+            ".......",
+            "y.....y",
+            "o.....o",
+            ".......",
+            "..kok..",
+            ".......",
+        ],
+        kind: FloorKind::Roof(RoofBoss::Bell),
     },
 ];
 

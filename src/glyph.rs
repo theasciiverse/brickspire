@@ -9,7 +9,7 @@
 //! pixel mode; only the drawing differs.
 
 use crate::game::{self, Game, Kind, Mode, BALL_R, BRICK_H, LEDGE, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF};
-use crate::boss::{self, Flight, MiniBoss, MiniKind, Rook, Storm, Weathercock};
+use crate::boss::{self, Bell, Flight, MiniBoss, MiniKind, Rook, ShotKind, Storm, Weathercock};
 use crate::roof::{self, RoofView, Seen};
 use crate::game::{Balcony, State};
 use crate::physics::{Path, V2};
@@ -367,6 +367,64 @@ fn draw_rook(cv: &mut Canvas, rk: &Rook, centre: V2, ring: f32, time: f32) {
     cv.put(bc, br, ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"][octant], if blink { feathers } else { Color::Rgb(225, 200, 110) }, None);
 }
 
+/// The Great Bell from above: a bronze pipe ring with `Ω` at its crown and the oak
+/// headstock across it, its rings of sound spreading (bright along the loud arcs),
+/// and the marks on the paddle's ring where they will land.
+fn draw_bell(cv: &mut Canvas, b: &Bell, centre: V2, ring: f32, time: f32) {
+    let gold = |urgent: f32| if (time * (10.0 + 30.0 * urgent)).sin() > 0.0 { Color::Rgb(255, 215, 110) } else { Color::Rgb(150, 115, 45) };
+    let marks = |cv: &mut Canvas, from: V2, axis: f32, fg: Color| {
+        for a in [axis, axis + std::f32::consts::PI] {
+            let (lo, hi) = (boss::ring_cross(from, a - boss::WAVE_SPAN, centre, ring), boss::ring_cross(from, a + boss::WAVE_SPAN, centre, ring));
+            let span = ((hi - lo).rem_euclid(std::f32::consts::TAU)) / 2.0;
+            ring_mark(cv, centre, ring, lo + span, span, fg);
+        }
+    };
+    if let Some(left) = b.tolling {
+        marks(cv, b.p, b.axis, gold(1.0 - left / boss::TOLL_WARN));
+    }
+    for w in &b.waves {
+        if w.r < ring + 1.0 {
+            marks(cv, w.c, w.axis, gold((w.r / ring).min(1.0)));
+        }
+        for a in [w.axis, w.axis + std::f32::consts::PI] {
+            let n = 24;
+            let cells = walk(cv, (0..=n).map(|i| {
+                let t = a - boss::WAVE_SPAN + 2.0 * boss::WAVE_SPAN * i as f32 / n as f32;
+                w.c + V2::new(t.cos(), t.sin()) * w.r
+            }));
+            for (c, r, sym) in strokes(&cells, false, false) {
+                cv.put(c, r, sym, Color::Rgb(255, 240, 190), None);
+            }
+        }
+    }
+    let shake = if b.tolling.is_some() { V2::new((b.t * 60.0).sin() * 0.5, 0.0) } else { V2::default() };
+    let blink = b.hurt > 0.0 && (b.hurt * 12.0) as i32 % 2 == 0;
+    let bronze = if blink { Color::Rgb(255, 255, 255) } else { Color::Rgb(215, 160, 75) };
+    // the headstock first, its ends sticking out past the bell's rim
+    let side = V2::new(-b.dir().y, b.dir().x) * (boss::BELL_R + 1.6);
+    let (a, z) = (b.p + shake - side, b.p + shake + side);
+    let cells = walk(cv, (0..=16).map(|i| a + (z - a) * (i as f32 / 16.0)));
+    for (c, r, sym) in strokes(&cells, true, false) {
+        cv.put(c, r, sym, Color::Rgb(150, 100, 55), None);
+    }
+    let (c0, r0, cols, rows) = pipe_ring(cv, b.p + shake, boss::BELL_R, bronze);
+    for r in r0 + 1..r0 + rows - 1 {
+        for c in c0 + 1..c0 + cols - 1 {
+            cv.put(c, r, " ", bronze, Some(Color::Rgb(90, 60, 28)));
+        }
+    }
+    let (cc, cr) = cv.cell(b.p + shake);
+    cv.put(cc, cr, "Ω", if blink { bronze } else { Color::Rgb(255, 220, 130) }, None);
+}
+
+/// The Jack, two rows tall (smallest size) or four, hammer raised and struck down
+/// on its bell. Columns `JACK_BODY` are its body, the rest hammer and bell.
+const JACK_SMALL: [[&str; 2]; 2] = [["╭(●●)▬┘", " ╱╨╲ Ω "], ["╭(●●)──", " ╱╨╲▬Ω "]];
+const JACK_BIG: [[&str; 4]; 2] = [
+    ["  ╭──╮ ▄▄ ", "  │●●│╱   ", " ─┤▓▓├    ", "  ╱  ╲  Ω "],
+    ["  ╭──╮    ", "  │●●│    ", " ─┤▓▓├──╮ ", "  ╱  ╲ ▄Ω "],
+];
+
 /// The Spider, two rows tall (smallest size) or four, legs one way and the other.
 /// Columns `SPIDER_BODY` are its body, the rest legs.
 const SPIDER_SMALL: [[&str; 2]; 2] = [["╲╭●●╮╱", "╱╰┬┬╯╲"], ["─╭●●╮─", "╱╰┬┬╯╲"]];
@@ -386,20 +444,29 @@ const GARGOYLE_BIG: [[&str; 4]; 2] = [
 fn draw_gargoyle(cv: &mut Canvas, g: &MiniBoss) {
     let rows_fit = (g.half().y * cv.view.s).round() as i32;
     let spider = g.kind == MiniKind::Spider;
-    let up = if spider { (g.t * 5.0).sin() < 0.0 } else { g.flap() < 0.0 };
+    let big = rows_fit >= 4;
+    let up = match g.kind {
+        MiniKind::Spider => (g.t * 5.0).sin() < 0.0,
+        MiniKind::Jack => g.swung > 0.2,
+        MiniKind::Gargoyle => g.flap() < 0.0,
+    };
     let frame = if up { 0 } else { 1 };
-    let sprite: Vec<&str> = match (spider, rows_fit >= 4) {
-        (false, true) => GARGOYLE_BIG[frame].to_vec(),
-        (false, false) => GARGOYLE_SMALL[frame].to_vec(),
-        (true, true) => SPIDER_BIG[frame].to_vec(),
-        (true, false) => SPIDER_SMALL[frame].to_vec(),
+    let sprite: Vec<&str> = match (g.kind, big) {
+        (MiniKind::Gargoyle, true) => GARGOYLE_BIG[frame].to_vec(),
+        (MiniKind::Gargoyle, false) => GARGOYLE_SMALL[frame].to_vec(),
+        (MiniKind::Spider, true) => SPIDER_BIG[frame].to_vec(),
+        (MiniKind::Spider, false) => SPIDER_SMALL[frame].to_vec(),
+        (MiniKind::Jack, true) => JACK_BIG[frame].to_vec(),
+        (MiniKind::Jack, false) => JACK_SMALL[frame].to_vec(),
     };
     let width = sprite.iter().map(|l| l.chars().count()).max().unwrap_or(0) as i32;
-    let head = match (spider, rows_fit >= 4) {
-        (false, true) => 7..=11,
-        (false, false) => 2..=6,
-        (true, true) => 4..=7,
-        (true, false) => 1..=4,
+    let head = match (g.kind, big) {
+        (MiniKind::Gargoyle, true) => 7..=11,
+        (MiniKind::Gargoyle, false) => 2..=6,
+        (MiniKind::Spider, true) => 4..=7,
+        (MiniKind::Spider, false) => 1..=4,
+        (MiniKind::Jack, true) => 1..=5,
+        (MiniKind::Jack, false) => 0..=4,
     };
     if spider {
         // its thread, up from its back to the lintel
@@ -409,7 +476,11 @@ fn draw_gargoyle(cv: &mut Canvas, g: &MiniBoss) {
             cv.put(tc, r, "│", Color::Rgb(170, 170, 185), None);
         }
     }
-    let (body_fg, leg_fg) = if spider { (Color::Rgb(120, 80, 140), Color::Rgb(85, 60, 95)) } else { (GARGOYLE_STONE, GARGOYLE_WING) };
+    let (body_fg, leg_fg) = match g.kind {
+        MiniKind::Spider => (Color::Rgb(120, 80, 140), Color::Rgb(85, 60, 95)),
+        MiniKind::Jack => (Color::Rgb(150, 155, 175), BRASS),
+        MiniKind::Gargoyle => (GARGOYLE_STONE, GARGOYLE_WING),
+    };
     let blink = g.hurt > 0.0 && (g.hurt * 12.0) as i32 % 2 == 0;
     let px = g.p.x * cv.view.s + cv.view.ox;
     let py = (g.p.y * cv.view.s + cv.view.oy) / 2.0;
@@ -443,6 +514,8 @@ enum Part {
     Ledge,
     Wall,
     Brick(BrickHere),
+    /// A clockwork brick winding back in: how far, and where across it.
+    Ghost(f32, f32),
     /// The boss balcony: walkway, rail (with its direction in cells), and the shadow
     /// it casts on the wall below.
     Walkway,
@@ -467,6 +540,9 @@ fn roof_part(game: &Game, roof: &RoofView, q: V2) -> Part {
     }
     if let Some(b) = roof.brick(game, q) {
         return Part::Brick(b);
+    }
+    if let Some((k, l)) = game.ghost_at(q).filter(|_| game.arena.mode == Mode::Circle) {
+        return Part::Ghost(k, l.x);
     }
     if d < 5.0 { Part::Plinth } else { Part::RoofFloor }
 }
@@ -510,7 +586,11 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
             Some(s) if s.v < FIELD_TOP => Part::Lintel,
             Some(s) if s.u < FIELD_X0 || s.u >= FIELD_X1 => Part::Pilaster,
             Some(s) if s.v >= LEDGE => Part::Ledge,
-            Some(s) => faces.brick(game, s.n, s.u, s.v).map_or(Part::Wall, Part::Brick),
+            Some(s) => match faces.brick(game, s.n, s.u, s.v) {
+                Some(b) => Part::Brick(b),
+                None if s.n == game.floor as i64 => game.ghost_at(V2::new(s.u, s.v)).map_or(Part::Wall, |(k, l)| Part::Ghost(k, l.x)),
+                None => Part::Wall,
+            },
         })
         .zip(samples.iter())
         .map(|(part, s)| {
@@ -584,6 +664,11 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
                 Part::Walkway => cv.put(c, r, "░", lit(LEDGE_STONE, k), Some(lit(LEDGE_SHADOW, k))),
                 Part::Rail(t) => cv.put(c, r, line(t, false), lit(STEEL, k), Some(lit(PIPE_BG, k * 0.6))),
                 Part::Shadow => cv.bg(c, r, lit(wall, 0.4)),
+                // winding back in: dots, filling with cogs from the left
+                Part::Ghost(wound, across) => {
+                    let sym = if across / game::BRICK_W < wound { "¤" } else { "·" };
+                    cv.put(c, r, sym, Color::Rgb(150, 112, 52), Some(wall));
+                }
                 Part::Brick(b) => {
                     let here = at(c, r);
                     let (left, right) = (!same(here, at(c - 1, r)), !same(here, at(c + 1, r)));
@@ -595,7 +680,7 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
                         (lit(dim(base, 0.3), k), lit(rgb(base), k))
                     };
                     let double = match b.kind {
-                        Kind::Plain(_) | Kind::Stone | Kind::Vine | Kind::Web => false,
+                        Kind::Plain(_) | Kind::Stone | Kind::Vine | Kind::Web | Kind::Clock => false,
                         Kind::Steel => b.hp > 1,
                         Kind::Gilt => true,
                     };
@@ -613,6 +698,7 @@ fn brick_stroke(kind: Kind, double: bool, left: bool, right: bool, top: bool, bo
         (Kind::Gilt, _) => (["╠", "╣"], "═", "║", ["╔", "╗", "╚", "╝"]),
         (Kind::Vine, _) => (["{", "}"], "~", "§", ["╭", "╮", "╰", "╯"]),
         (Kind::Web, _) => (["├", "┤"], "┼", "┼", ["┌", "┐", "└", "┘"]),
+        (Kind::Clock, _) => (["[", "]"], "¤", "¤", ["┌", "┐", "└", "┘"]),
         (_, true) => (["╞", "╡"], "═", "│", ["╒", "╕", "╘", "╛"]),
         _ => (["├", "┤"], "─", "│", ["┌", "┐", "└", "┘"]),
     };
@@ -730,6 +816,9 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     if let (Some(rk), Path::Circle { c, r }) = (&game.rook, game.arena.path) {
         draw_rook(&mut cv, rk, c, r, game.time);
     }
+    if let (Some(b), Path::Circle { c, r }) = (&game.bell, game.arena.path) {
+        draw_bell(&mut cv, b, c, r, game.time);
+    }
 
     for part in &game.particles {
         let (c, r) = cv.cell(part.p);
@@ -742,10 +831,10 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     }
     for shot in &game.shots {
         let (c, r) = cv.cell(shot.p);
-        if shot.web {
-            cv.put(c, r, "#", Color::Rgb(225, 225, 235), None);
-        } else {
-            cv.put(c, r, "*", FIRE, None);
+        match shot.kind {
+            ShotKind::Web => cv.put(c, r, "#", Color::Rgb(225, 225, 235), None),
+            ShotKind::Chime => cv.put(c, r, "♪", Color::Rgb(255, 220, 120), None),
+            ShotKind::Fire => cv.put(c, r, "*", FIRE, None),
         }
     }
 
@@ -800,6 +889,12 @@ mod tests {
         }
         for frame in GARGOYLE_BIG {
             assert!(frame.iter().all(|l| l.chars().count() == 19), "{frame:?}");
+        }
+        for frame in JACK_SMALL {
+            assert!(frame.iter().all(|l| l.chars().count() == 7), "{frame:?}");
+        }
+        for frame in JACK_BIG {
+            assert!(frame.iter().all(|l| l.chars().count() == 10), "{frame:?}");
         }
     }
 }

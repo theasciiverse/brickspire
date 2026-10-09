@@ -9,6 +9,11 @@
 //! creeps to and fro, rising and dropping on its thread; it spits web at the paddle
 //! (a hit gums it up, slowing it for a while) and spins web bricks beneath itself.
 //!
+//! The third tower's is the Jack, the clock's iron striker come down off its bell.
+//! It marches to and fro in ticks, like a clock's hand; on the hour it strikes a
+//! volley of chimes at the paddle (one at first, up to three when hurt), and every
+//! few hits it winds a row of clockwork bricks beneath itself.
+//!
 //! The first tower's roof boss is the Storm Cloud: a thundercloud drifting over the
 //! roof with a glowing core, the target. The ball always flies straight under it; its
 //! threat is aimed at the paddle instead: it marks a stretch of the ring, and a moment
@@ -20,6 +25,13 @@
 //! hops about the nest, and now and then crouches, glaring at the paddle's spot on
 //! the ring, then swoops out there and back: a paddle still on that spot is stunned.
 //! Every few hits it patches its nest.
+//!
+//! The third tower's roof boss is the Great Bell, hanging over the middle of the
+//! roof and swinging. Now and then it shivers, then tolls: a ring of sound spreads
+//! out from it, loud only along its swing (two arcs, front and back), and stuns the
+//! paddle where an arc crosses it. The ring is marked where the arcs will land, so
+//! the paddle can step into the quiet between them. Its swing turns slowly round;
+//! every few hits it lurches a quarter turn and tolls twice.
 //!
 //! The Weathercock (saved for a later tower's roof) is a giant iron weathervane in the
 //! middle of the roof, roaming round it in a slow figure. Its arrow swings slowly
@@ -36,6 +48,12 @@ pub use crate::levels::MiniKind;
 /// Spider's, leg tip to leg tip.
 pub const HALF: V2 = V2::new(7.0, 3.0);
 pub const SPIDER_HALF: V2 = V2::new(4.5, 3.0);
+pub const JACK_HALF: V2 = V2::new(5.4, 4.9);
+/// How much bigger the Jack is drawn than its sprite's own units.
+pub const JACK_SCALE: f32 = 1.4;
+const CHIME_SPEED: f32 = 30.0;
+/// Seconds between the chimes of one volley.
+const CHIME_GAP: f32 = 0.45;
 const WEB_SPEED: f32 = 26.0;
 pub const SHOT_R: f32 = 1.0;
 const SHOT_SPEED: f32 = 34.0;
@@ -49,12 +67,21 @@ pub const AIM_TIME: f32 = 0.6;
 const SWAY: f32 = 30.0;
 const HOVER_Y: f32 = 12.5;
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ShotKind {
+    /// The Gargoyle's fireball: stuns the paddle.
+    Fire,
+    /// The Spider's web: slows the paddle.
+    Web,
+    /// The Jack's chime: stuns the paddle.
+    Chime,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Shot {
     pub p: V2,
     pub v: V2,
-    /// Web (slows the paddle) rather than fire (stuns it).
-    pub web: bool,
+    pub kind: ShotKind,
 }
 
 /// What a hit did.
@@ -84,6 +111,9 @@ pub struct MiniBoss {
     pub reload: f32,
     since_shield: u8,
     shots_fired: u32,
+    /// The Jack: chimes left in this volley, and seconds since its hammer last fell.
+    volley: u8,
+    pub swung: f32,
 }
 
 impl MiniBoss {
@@ -99,6 +129,8 @@ impl MiniBoss {
             reload: 3.0,
             since_shield: 0,
             shots_fired: 0,
+            volley: 0,
+            swung: 1.0,
         }
     }
 
@@ -111,6 +143,7 @@ impl MiniBoss {
         match self.kind {
             MiniKind::Gargoyle => HALF,
             MiniKind::Spider => SPIDER_HALF,
+            MiniKind::Jack => JACK_HALF,
         }
     }
 
@@ -125,7 +158,7 @@ impl MiniBoss {
 
     /// Is it about to spit (eyes glowing)?
     pub fn aiming(&self) -> bool {
-        self.reload < AIM_TIME
+        self.reload < AIM_TIME || self.volley > 0
     }
 
     /// Move for `dt`; while `live`, spit at `target` when reloaded.
@@ -140,22 +173,47 @@ impl MiniBoss {
                 WORLD_W / 2.0 + (SWAY + 2.0) * (self.phase * 0.8).sin(),
                 11.5 + 2.2 * (self.t * 0.7 * self.rage()).sin(),
             ),
+            // marching in ticks, like a clock's hand: a quick step, then a pause
+            MiniKind::Jack => {
+                let ticks = self.phase * 2.2;
+                let step = (ticks.fract() * 4.0).min(1.0);
+                let stepped = ticks.floor() + step * step * (3.0 - 2.0 * step);
+                V2::new(WORLD_W / 2.0 + SWAY * (stepped / 2.2).sin(), HOVER_Y - 0.6 * (1.0 - (step * std::f32::consts::PI).sin().abs()))
+            }
         };
+        self.swung += dt;
         if !live {
+            self.volley = 0;
             return;
         }
         self.reload -= dt;
-        if self.reload <= 0.0 {
-            let mouth = self.p + V2::new(0.0, 1.0);
-            let web = self.kind == MiniKind::Spider;
-            let speed = if web { WEB_SPEED } else { SHOT_SPEED };
-            shots.push(Shot { p: mouth, v: (target - mouth).norm() * speed, web });
-            self.shots_fired += 1;
-            // a little uneven, so the rhythm can't be learned to the frame
-            let wobble = [0.0, 0.5, -0.3, 0.8, 0.2][self.shots_fired as usize % 5];
-            self.reload = (2.4 + wobble) / self.rage();
-            log::info!("{:?} spits at {:.1},{:.1}", self.kind, target.x, target.y);
+        if self.reload > 0.0 {
+            return;
         }
+        // (the Jack's chimes ring out from the little bell at its side)
+        let mouth = self.p + if self.kind == MiniKind::Jack { V2::new(3.0, 0.8) * JACK_SCALE } else { V2::new(0.0, 1.0) };
+        let (kind, speed) = match self.kind {
+            MiniKind::Gargoyle => (ShotKind::Fire, SHOT_SPEED),
+            MiniKind::Spider => (ShotKind::Web, WEB_SPEED),
+            MiniKind::Jack => (ShotKind::Chime, CHIME_SPEED),
+        };
+        shots.push(Shot { p: mouth, v: (target - mouth).norm() * speed, kind });
+        self.shots_fired += 1;
+        self.swung = 0.0;
+        if self.kind == MiniKind::Jack {
+            // on the hour: a volley, longer when hurt, each chime aimed afresh
+            if self.volley == 0 {
+                self.volley = 1 + (self.rage() > 1.3) as u8 + (self.rage() > 1.6) as u8;
+            }
+            self.volley -= 1;
+            self.reload = if self.volley > 0 { CHIME_GAP } else { 3.6 / self.rage() };
+            log::info!("jack strikes at {:.1},{:.1} ({} more)", target.x, target.y, self.volley);
+            return;
+        }
+        // a little uneven, so the rhythm can't be learned to the frame
+        let wobble = [0.0, 0.5, -0.3, 0.8, 0.2][self.shots_fired as usize % 5];
+        self.reload = (2.4 + wobble) / self.rage();
+        log::info!("{:?} spits at {:.1},{:.1}", self.kind, target.x, target.y);
     }
 
     pub fn hit(&mut self) -> Hurt {
@@ -480,6 +538,174 @@ impl Rook {
     }
 }
 
+/// The Great Bell: its mouth's radius (the target), how far it swings either way,
+/// and how fast.
+pub const BELL_R: f32 = 4.2;
+const BELL_HP: u8 = 14;
+const BELL_SWING: f32 = 5.0;
+const SWING_RATE: f32 = 1.3;
+/// How fast its swing turns round the roof, radians per second.
+const AXIS_TURN: f32 = 0.12;
+/// Seconds between tolls (fewer when hurt), and how long it shivers first.
+const TOLL_EVERY: f32 = 5.0;
+pub const TOLL_WARN: f32 = 1.1;
+/// The ring of sound: how fast it spreads, half of each loud arc (radians, front
+/// and back along the swing), and how thick it is.
+pub const WAVE_SPEED: f32 = 14.0;
+pub const WAVE_SPAN: f32 = 0.7;
+pub const WAVE_TH: f32 = 1.3;
+/// Hits it takes between lurches (a quarter turn and a double toll).
+const LURCH_EVERY: u8 = 3;
+
+/// A ring of sound spreading from where the bell tolled.
+#[derive(Clone, Copy, Debug)]
+pub struct Wave {
+    pub c: V2,
+    pub r: f32,
+    /// The swing's direction when it tolled: the loud arcs face this way and back.
+    pub axis: f32,
+    /// Has it stunned the paddle already (once per wave).
+    pub struck: bool,
+}
+
+impl Wave {
+    /// Is point `q` in one of the loud arcs' directions from the wave's centre?
+    pub fn loud_towards(&self, q: V2) -> bool {
+        loud(self.c, self.axis, q)
+    }
+}
+
+/// Is `q` within the loud arcs (along `axis`, front and back) seen from `c`?
+pub fn loud(c: V2, axis: f32, q: V2) -> bool {
+    let d = q - c;
+    let off = (d.y.atan2(d.x) - axis).rem_euclid(std::f32::consts::PI);
+    off < WAVE_SPAN || off > std::f32::consts::PI - WAVE_SPAN
+}
+
+/// Where a ray from `from` at angle `a` crosses the ring (centre `c`, radius `r`),
+/// as an angle round the ring; `from` must be inside it.
+pub fn ring_cross(from: V2, a: f32, c: V2, r: f32) -> f32 {
+    let u = V2::new(a.cos(), a.sin());
+    let w = from - c;
+    let b = w.dot(u);
+    let t = -b + (b * b - (w.dot(w) - r * r)).max(0.0).sqrt();
+    let q = w + u * t;
+    q.y.atan2(q.x)
+}
+
+#[derive(Clone, Debug)]
+pub struct Bell {
+    home: V2,
+    /// Where its mouth hangs now, swung along `axis`.
+    pub p: V2,
+    pub axis: f32,
+    axis_to: f32,
+    pub swing: f32,
+    pub hp: u8,
+    pub max: u8,
+    pub hurt: f32,
+    pub t: f32,
+    /// Shivering before a toll: seconds left.
+    pub tolling: Option<f32>,
+    next_toll: f32,
+    /// Extra tolls to follow quickly (after a lurch).
+    queued: u8,
+    pub waves: Vec<Wave>,
+    since_lurch: u8,
+}
+
+impl Bell {
+    pub fn new(home: V2) -> Bell {
+        Bell {
+            home,
+            p: home,
+            axis: 0.0,
+            axis_to: 0.0,
+            swing: 0.0,
+            hp: BELL_HP,
+            max: BELL_HP,
+            hurt: 0.0,
+            t: 0.0,
+            tolling: None,
+            next_toll: 3.5,
+            queued: 0,
+            waves: Vec::new(),
+            since_lurch: 0,
+        }
+    }
+
+    fn rage(&self) -> f32 {
+        1.0 + (1.0 - self.hp as f32 / self.max as f32) * 0.8
+    }
+
+    pub fn dir(&self) -> V2 {
+        V2::new(self.axis.cos(), self.axis.sin())
+    }
+
+    /// Swing for `dt` and spread its rings out to `rim`; while `live`, toll.
+    /// Returns true when it tolls.
+    pub fn update(&mut self, dt: f32, live: bool, rim: f32) -> bool {
+        self.t += dt;
+        self.hurt = (self.hurt - dt).max(0.0);
+        self.axis_to += dt * AXIS_TURN * self.rage();
+        self.axis += (self.axis_to - self.axis) * (dt * 3.0).min(1.0);
+        // it swings harder while it shivers
+        let hard = if self.tolling.is_some() { 1.6 } else { 1.0 };
+        self.swing += dt * SWING_RATE * self.rage().sqrt() * hard;
+        self.p = self.home + self.dir() * (BELL_SWING * self.swing.sin());
+        for w in self.waves.iter_mut() {
+            w.r += WAVE_SPEED * dt;
+        }
+        self.waves.retain(|w| w.r < rim + 2.0);
+        if !live {
+            self.tolling = None;
+            return false;
+        }
+        match self.tolling {
+            Some(left) if left <= dt => {
+                self.tolling = None;
+                self.waves.push(Wave { c: self.p, r: BELL_R, axis: self.axis, struck: false });
+                self.next_toll = if self.queued > 0 { 1.2 } else { TOLL_EVERY / self.rage() };
+                self.queued = self.queued.saturating_sub(1);
+                log::info!("the bell tolls along {:.0} degrees", self.axis.to_degrees());
+                return true;
+            }
+            Some(left) => self.tolling = Some(left - dt),
+            None => {
+                self.next_toll -= dt;
+                if self.next_toll <= 0.0 {
+                    self.tolling = Some(TOLL_WARN);
+                }
+            }
+        }
+        false
+    }
+
+    /// Its mouth was hit. Every few hits it lurches a quarter turn and tolls twice.
+    pub fn hit(&mut self) -> Hurt {
+        if self.hurt > 0.0 {
+            return Hurt::Shrugged;
+        }
+        self.hp = self.hp.saturating_sub(1);
+        self.hurt = HURT_TIME;
+        if self.hp == 0 {
+            return Hurt::Dead;
+        }
+        self.since_lurch += 1;
+        if self.since_lurch >= LURCH_EVERY {
+            self.since_lurch = 0;
+            self.axis_to += std::f32::consts::FRAC_PI_2;
+            self.queued = 1;
+            if self.tolling.is_none() {
+                self.next_toll = self.next_toll.min(0.6);
+            }
+            log::info!("the bell lurches");
+            return Hurt::Shield;
+        }
+        Hurt::Hurt
+    }
+}
+
 /// The Weathercock's arrow: half its length and its thickness; its rooster's radius.
 pub const ARROW_HALF: f32 = 9.5;
 pub const ARROW_TH: f32 = 0.8;
@@ -705,6 +931,52 @@ mod tests {
         r.hp = 10;
         assert_eq!((r.hit(), r.hit()), (Hurt::Hurt, Hurt::Shrugged));
         assert_eq!(r.rebuild(|_, _| true), 4);
+    }
+
+    #[test]
+    fn the_jack_strikes_volleys_when_hurt() {
+        let mut j = MiniBoss::new(MiniKind::Jack);
+        let mut shots = Vec::new();
+        for _ in 0..(20.0 * 120.0) as usize {
+            j.update(1.0 / 120.0, true, V2::new(50.0, 50.0), &mut shots);
+            let (min, max) = j.bounds();
+            assert!(min.x >= crate::game::FIELD_X0 && max.x <= crate::game::FIELD_X1);
+        }
+        let calm = shots.len();
+        assert!(calm >= 4 && shots.iter().all(|s| s.kind == ShotKind::Chime), "{calm} chimes");
+        shots.clear();
+        j.hp = 2;
+        for _ in 0..(20.0 * 120.0) as usize {
+            j.update(1.0 / 120.0, true, V2::new(50.0, 50.0), &mut shots);
+        }
+        assert!(shots.len() > calm * 2, "{} chimes when hurt, {calm} calm", shots.len());
+    }
+
+    #[test]
+    fn the_bell_tolls_loud_along_its_swing() {
+        let c = V2::new(50.0, 28.0);
+        let mut b = Bell::new(c);
+        let mut tolls = 0;
+        for _ in 0..(30.0 * 120.0) as usize {
+            if b.update(1.0 / 120.0, true, 33.0) {
+                tolls += 1;
+            }
+            assert!((b.p - c).len() <= BELL_SWING + 1e-3);
+        }
+        assert!(tolls >= 5, "{tolls} tolls");
+        let w = Wave { c, r: 10.0, axis: 0.0, struck: false };
+        assert!(w.loud_towards(c + V2::new(10.0, 1.0)) && w.loud_towards(c - V2::new(10.0, 1.0)));
+        assert!(!w.loud_towards(c + V2::new(0.0, 10.0)));
+        // straight across from the middle, the ring is crossed where you'd expect
+        assert!((ring_cross(c, 0.5, c, 26.0) - 0.5).abs() < 1e-4);
+        let mut lurches = 0;
+        while b.hp > 0 {
+            b.hurt = 0.0;
+            if b.hit() == Hurt::Shield {
+                lurches += 1;
+            }
+        }
+        assert_eq!(lurches, 4);
     }
 
     #[test]

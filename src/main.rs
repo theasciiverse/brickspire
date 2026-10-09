@@ -64,6 +64,8 @@ fn new_game() -> Game {
     g.roof_boss = match arg("--roof").as_deref() {
         Some("weathercock") => Some(RoofBoss::Weathercock),
         Some("storm") => Some(RoofBoss::Storm),
+        Some("rook") => Some(RoofBoss::Rook),
+        Some("bell") => Some(RoofBoss::Bell),
         _ => None,
     };
     if let Some(n) = arg("--floor").and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 1) {
@@ -230,7 +232,15 @@ fn summary(game: &Game) -> String {
             r.max,
             r.twigs.iter().filter(|&&t| t).count(),
             r.flight
-        )) + &game.webbed.gt(&0.0).then_some(" webbed").unwrap_or("") + &game.boss.as_ref().map_or(String::new(), |g| format!(
+        )) + &game.bell.as_ref().map_or(String::new(), |b| format!(
+            " bell at {:.1},{:.1} hp {}/{} waves {}{}",
+            b.p.x,
+            b.p.y,
+            b.hp,
+            b.max,
+            b.waves.len(),
+            if b.tolling.is_some() { " tolling" } else { "" }
+        )) + &format!(" ghosts {}", game.ghosts.len()) + &game.webbed.gt(&0.0).then_some(" webbed").unwrap_or("") + &game.boss.as_ref().map_or(String::new(), |g| format!(
             " {:?} at {:.1},{:.1} hp {}/{} shots {}",
             g.kind,
             g.p.x,
@@ -266,11 +276,19 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
     ]);
     let mut top = top;
     let boss_bar = match (&game.boss, &game.vane, &game.storm, &game.rook) {
-        (Some(g), ..) => Some((if g.kind == levels::MiniKind::Spider { "SPIDER" } else { "GARGOYLE" }, g.hp, g.max)),
+        (Some(g), ..) => Some((
+            match g.kind {
+                levels::MiniKind::Spider => "SPIDER",
+                levels::MiniKind::Jack => "THE JACK",
+                levels::MiniKind::Gargoyle => "GARGOYLE",
+            },
+            g.hp,
+            g.max,
+        )),
         (_, Some(w), ..) => Some(("WEATHERCOCK", w.hp, w.max)),
         (_, _, Some(s), _) => Some(("STORM CLOUD", s.hp, s.max)),
         (.., Some(r)) => Some(("ROOK", r.hp, r.max)),
-        _ => None,
+        _ => game.bell.as_ref().map(|b| ("THE GREAT BELL", b.hp, b.max)),
     };
     if let Some((name, hp, max)) = boss_bar {
         let red = bar.fg(Color::Rgb(255, 90, 60));

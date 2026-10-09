@@ -3,7 +3,7 @@
 //! A fixed step of `STEP` seconds. The paddle moves first, then each ball is swept
 //! along its motion, bouncing off whatever it touches first, until the step is used up.
 
-use crate::boss::{self, Flight, Hurt, MiniBoss, MiniKind, Rook, Shot, Storm, Weathercock};
+use crate::boss::{self, Bell, Flight, Hurt, MiniBoss, MiniKind, Rook, Shot, ShotKind, Storm, Weathercock};
 use crate::levels::{self, Floor, FloorKind, RoofBoss};
 use crate::map;
 use crate::physics::{self, Hit, Path, V2};
@@ -166,6 +166,8 @@ pub enum Kind {
     Vine,
     /// Web spun by the spider as a shield: one hit.
     Web,
+    /// Clockwork: winds itself back in a while after it is broken.
+    Clock,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -184,6 +186,16 @@ impl Brick {
     pub fn new(kind: Kind, hp: u8) -> Brick {
         Brick { kind, hp, flash: 0.0, slide: 0.0, dir: 1 }
     }
+}
+
+/// Seconds a broken clockwork brick takes to wind back in.
+pub const CLOCK_BACK: f32 = 9.0;
+
+/// A broken clockwork brick winding back in: its cell, and seconds left.
+#[derive(Clone, Copy, Debug)]
+pub struct Ghost {
+    pub i: usize,
+    pub left: f32,
 }
 
 /// Seconds between a vine's steps, and how long a step takes.
@@ -244,6 +256,8 @@ pub struct Game {
     pub cols: usize,
     pub rows: usize,
     pub bricks: Vec<Option<Brick>>,
+    /// Clockwork bricks winding back in.
+    pub ghosts: Vec<Ghost>,
     pub balls: Vec<Ball>,
     pub paddle: Paddle,
     pub state: State,
@@ -255,9 +269,11 @@ pub struct Game {
     /// The mini-boss on a boss floor (gone once beaten), its fireballs, and how long
     /// the paddle has left stunned by one.
     pub boss: Option<MiniBoss>,
-    /// The roof's boss, likewise: the Storm Cloud, the Rook or the Weathercock.
+    /// The roof's boss, likewise: the Storm Cloud, the Rook, the Great Bell or the
+    /// Weathercock.
     pub storm: Option<Storm>,
     pub rook: Option<Rook>,
+    pub bell: Option<Bell>,
     pub vane: Option<Weathercock>,
     /// A roof boss forced for every roof (`--roof`), instead of each roof's own.
     pub roof_boss: Option<RoofBoss>,
@@ -286,6 +302,8 @@ enum Thing {
     /// A twig of the Rook's nest, and the Rook.
     Twig(usize),
     Crow,
+    /// The Great Bell's mouth.
+    Bell,
 }
 
 pub fn brick_rgb(kind: Kind) -> [u8; 3] {
@@ -305,6 +323,7 @@ pub fn brick_rgb(kind: Kind) -> [u8; 3] {
         Kind::Stone => [150, 135, 118],
         Kind::Vine => [70, 170, 70],
         Kind::Web => [215, 215, 225],
+        Kind::Clock => [200, 150, 70],
     }
 }
 
@@ -323,6 +342,7 @@ pub fn parse(def: &Floor) -> (usize, usize, Vec<Option<Kind>>) {
                     's' => Some(Kind::Stone),
                     'v' => Some(Kind::Vine),
                     'W' => Some(Kind::Web),
+                    'k' => Some(Kind::Clock),
                     _ => Some(Kind::Plain("wocgrbmy".find(ch)? as u8)),
                 })
                 .collect();
@@ -354,6 +374,7 @@ impl Game {
             cols: 0,
             rows: 0,
             bricks: Vec::new(),
+            ghosts: Vec::new(),
             balls: Vec::new(),
             paddle: Paddle { s: 0.0, vel: 0.0 },
             state: State::Serve { wait: 0.0 },
@@ -365,6 +386,7 @@ impl Game {
             boss: None,
             storm: None,
             rook: None,
+            bell: None,
             vane: None,
             roof_boss: None,
             boss_floor: false,
@@ -404,6 +426,7 @@ impl Game {
         };
         self.storm = roof.and_then(|(who, c)| (who == RoofBoss::Storm).then(|| Storm::new(c)));
         self.rook = roof.and_then(|(who, c)| (who == RoofBoss::Rook).then(|| Rook::new(c)));
+        self.bell = roof.and_then(|(who, c)| (who == RoofBoss::Bell).then(|| Bell::new(c)));
         self.vane = roof.and_then(|(who, c)| (who == RoofBoss::Weathercock).then(|| Weathercock::new(c)));
         let (cols, rows, cells) = parse(def);
         (self.cols, self.rows) = (cols, rows);
@@ -424,6 +447,7 @@ impl Game {
                 })
             })
             .collect();
+        self.ghosts.clear();
         self.particles.clear();
         self.serve();
         info!("floor {} start: {} ({} bricks, {:?})", n + 1, def.name, self.left(), self.arena.mode);
@@ -535,6 +559,51 @@ impl Game {
         }
     }
 
+    /// Broken clockwork winds back in, once its cell is free and no ball is on it
+    /// (only in play: a cleared floor stays cleared).
+    fn wind_clocks(&mut self) {
+        if self.state != State::Play {
+            return;
+        }
+        let mut back = Vec::new();
+        for g in self.ghosts.iter_mut() {
+            g.left = (g.left - STEP).max(0.0);
+            if g.left == 0.0 {
+                back.push(g.i);
+            }
+        }
+        for i in back {
+            let (min, max) = self.brick_box(i);
+            let in_the_way = self.balls.iter().any(|b| physics::box_overlap(b.p, min, max, BALL_R + 0.5).is_some());
+            if self.bricks[i].is_some() || in_the_way {
+                continue;
+            }
+            self.bricks[i] = Some(Brick { flash: 0.15, ..Brick::new(Kind::Clock, 1) });
+            self.ghosts.retain(|g| g.i != i);
+            info!("clockwork winds back in at {i}");
+        }
+    }
+
+    /// The broken clockwork brick in cell `i`, if any: how far wound back (0 to 1).
+    pub fn ghost(&self, i: usize) -> Option<f32> {
+        self.ghosts.iter().find(|g| g.i == i).map(|g| 1.0 - g.left / CLOCK_BACK)
+    }
+
+    /// A clockwork brick winding back in under world point `p`: how far wound, and
+    /// where in its cell.
+    pub fn ghost_at(&self, p: V2) -> Option<(f32, V2)> {
+        let q = p - self.origin;
+        if q.x < 0.0 || q.y < 0.0 {
+            return None;
+        }
+        let (c, r) = ((q.x / BRICK_W) as usize, (q.y / BRICK_H) as usize);
+        if c >= self.cols || r >= self.rows {
+            return None;
+        }
+        let k = self.ghost(r * self.cols + c)?;
+        Some((k, V2::new(q.x.rem_euclid(BRICK_W), q.y.rem_euclid(BRICK_H))))
+    }
+
     /// The paddle as a segment, and the path's normal at its centre.
     pub fn paddle_segment(&self) -> (V2, V2, V2) {
         let path = &self.arena.path;
@@ -562,6 +631,7 @@ impl Game {
             b.flash = (b.flash - STEP).max(0.0);
         }
         self.grow_vines();
+        self.wind_clocks();
         let gravity = if self.arena.mode == Mode::Circle { 0.0 } else { GRAVITY };
         self.particles.retain_mut(|p| {
             p.v.y += gravity * STEP;
@@ -666,7 +736,7 @@ impl Game {
 
     /// Is a boss still alive on this floor?
     pub fn boss_left(&self) -> bool {
-        self.boss.is_some() || self.vane.is_some() || self.storm.is_some() || self.rook.is_some()
+        self.boss.is_some() || self.vane.is_some() || self.storm.is_some() || self.rook.is_some() || self.bell.is_some()
     }
 
     fn launch(&mut self) {
@@ -768,6 +838,10 @@ impl Game {
                     self.balls[i].v = ball.v.reflect(hit.n);
                     self.hit_rook();
                 }
+                Thing::Bell => {
+                    self.balls[i].v = ball.v.reflect(hit.n);
+                    self.hit_bell();
+                }
             }
             self.balls[i].v = self.tidy(self.balls[i].v);
         }
@@ -853,6 +927,9 @@ impl Game {
             }
             take(physics::sweep_capsule(p, d, r.p, r.p, boss::CROW_R + BALL_R), Thing::Crow);
         }
+        if let Some(b) = &self.bell {
+            take(physics::sweep_capsule(p, d, b.p, b.p, boss::BELL_R + BALL_R), Thing::Bell);
+        }
         let (a, b, n) = self.paddle_segment();
         let h = physics::sweep_capsule(p, d, a, b, PADDLE_TH + BALL_R).filter(|h| h.n.dot(n) > -0.3);
         take(h, Thing::Paddle);
@@ -892,10 +969,15 @@ impl Game {
             return;
         }
         self.bricks[i] = None;
+        if brick.kind == Kind::Clock {
+            self.ghosts.retain(|g| g.i != i);
+            self.ghosts.push(Ghost { i, left: CLOCK_BACK });
+        }
         self.score += match brick.kind {
             Kind::Plain(c) => 50 + 10 * c as u32,
             Kind::Stone | Kind::Web => 10,
             Kind::Vine => 80,
+            Kind::Clock => 60,
             _ => 50 * (self.floor as u32 + 1),
         };
         let (min, max) = self.brick_box(i);
@@ -925,6 +1007,7 @@ impl Game {
         self.update_vane();
         self.update_storm();
         self.update_rook();
+        self.update_bell();
         let Some(mut g) = self.boss.take() else { return };
         let live = self.state == State::Play;
         let target = self.arena.path.point(self.paddle.s);
@@ -945,18 +1028,23 @@ impl Game {
         self.shots.retain_mut(|s| {
             s.p += s.v * STEP;
             if (s.p - physics::closest_on_segment(s.p, a, b)).len() < PADDLE_TH + boss::SHOT_R {
-                stunned = Some((s.p, s.web));
+                stunned = Some((s.p, s.kind));
                 return false;
             }
             !arena.lost(s.p) && s.p.y < WORLD_H + 4.0
         });
         match stunned {
-            Some((at, false)) => {
+            Some((at, ShotKind::Fire)) => {
                 info!("paddle stunned");
                 self.stun = STUN;
                 self.burst(at, V2::new(2.0, 1.0), 10, [255, 150, 40], 22.0);
             }
-            Some((at, true)) => {
+            Some((at, ShotKind::Chime)) => {
+                info!("paddle stunned by a chime");
+                self.stun = STUN;
+                self.burst(at, V2::new(2.0, 1.0), 10, [255, 225, 120], 22.0);
+            }
+            Some((at, ShotKind::Web)) => {
                 info!("paddle webbed");
                 self.webbed = WEBBED;
                 self.burst(at, V2::new(3.0, 1.0), 10, [215, 215, 225], 12.0);
@@ -1076,6 +1164,65 @@ impl Game {
         }
     }
 
+    /// The Great Bell swings and tolls; where a loud arc of a ring crosses the
+    /// paddle, it stuns it (once per ring). A ball the bell swung into is pushed out.
+    fn update_bell(&mut self) {
+        let Some(mut bell) = self.bell.take() else { return };
+        if bell.update(STEP, self.state == State::Play, roof::RIM) {
+            let at = bell.p;
+            self.burst(at, V2::new(3.0, 3.0), 10, [255, 220, 130], 18.0);
+        }
+        for b in self.balls.iter_mut() {
+            let off = b.p - bell.p;
+            let reach = boss::BELL_R + BALL_R;
+            if off.len() < reach && off.len() > 0.0 {
+                let n = off.norm();
+                b.p = bell.p + n * (reach + 1e-3);
+                if b.v.dot(n) < 0.0 {
+                    b.v = b.v.reflect(n);
+                }
+            }
+        }
+        let (pa, pb, _) = self.paddle_segment();
+        let mut stunned = None;
+        for w in bell.waves.iter_mut().filter(|w| !w.struck) {
+            // along the paddle, any point the ring's loud part is passing over
+            let hit = (0..=8).map(|k| pa + (pb - pa) * (k as f32 / 8.0)).find(|&q| ((q - w.c).len() - w.r).abs() < boss::WAVE_TH + PADDLE_TH && w.loud_towards(q));
+            if let Some(q) = hit {
+                w.struck = true;
+                stunned = Some(q);
+            }
+        }
+        self.bell = Some(bell);
+        if let Some(at) = stunned {
+            info!("paddle stunned by the bell");
+            self.stun = STUN;
+            self.burst(at, V2::new(2.0, 2.0), 10, [255, 220, 130], 22.0);
+        }
+    }
+
+    fn hit_bell(&mut self) {
+        let Some(b) = self.bell.as_mut() else { return };
+        let hurt = b.hit();
+        let (at, hp) = (b.p, b.hp);
+        match hurt {
+            Hurt::Shrugged => return,
+            Hurt::Hurt | Hurt::Shield => {
+                info!("bell hit: {hp} left");
+                self.score += 150;
+                self.burst(at, V2::new(3.0, 3.0), 8, [235, 180, 80], 16.0);
+            }
+            Hurt::Dead => {
+                info!("bell beaten");
+                self.score += 4000;
+                self.bell = None;
+                self.burst(at, V2::new(8.0, 8.0), 50, [200, 140, 60], 30.0);
+                self.burst(at, V2::new(4.0, 4.0), 30, [255, 230, 150], 26.0);
+            }
+        }
+        self.speed = (self.speed + SPEED_PER_HIT).min(self.speed_max());
+    }
+
     fn break_twig(&mut self, k: usize) {
         let Some(r) = self.rook.as_mut() else { return };
         if !r.twigs[k] {
@@ -1192,7 +1339,11 @@ impl Game {
         let Some(g) = self.boss.as_mut() else { return };
         let hurt = g.hit();
         let (at, hp, kind, half) = (g.p, g.hp, g.kind, g.half());
-        let body = if kind == MiniKind::Spider { [70, 40, 80] } else { [150, 140, 160] };
+        let body = match kind {
+            MiniKind::Spider => [70, 40, 80],
+            MiniKind::Jack => [60, 62, 74],
+            MiniKind::Gargoyle => [150, 140, 160],
+        };
         match hurt {
             Hurt::Shrugged => return,
             Hurt::Hurt | Hurt::Shield => {
@@ -1209,16 +1360,25 @@ impl Game {
                 self.boss = None;
                 self.shots.clear();
                 self.burst(at, half * 2.0, 40, body, 30.0);
-                self.burst(at, half, 20, if kind == MiniKind::Spider { [215, 215, 225] } else { [255, 120, 40] }, 24.0);
+                let spark = match kind {
+                    MiniKind::Spider => [215, 215, 225],
+                    MiniKind::Jack => [255, 210, 110],
+                    MiniKind::Gargoyle => [255, 120, 40],
+                };
+                self.burst(at, half, 20, spark, 24.0);
             }
         }
         self.speed = (self.speed + SPEED_PER_HIT).min(self.speed_max());
     }
 
     /// A row of bricks under the mini-boss, wherever there is room for them: stone
-    /// from the Gargoyle, web from the Spider.
+    /// from the Gargoyle, web from the Spider, clockwork from the Jack.
     fn lay_shield(&mut self, at: V2, half: V2, kind: MiniKind) {
-        let brick = if kind == MiniKind::Spider { Kind::Web } else { Kind::Stone };
+        let brick = match kind {
+            MiniKind::Spider => Kind::Web,
+            MiniKind::Jack => Kind::Clock,
+            MiniKind::Gargoyle => Kind::Stone,
+        };
         let y = at.y + half.y + 2.5 - self.origin.y;
         let r = (y / BRICK_H).floor() as i32;
         if r < 0 || r as usize >= self.rows {
@@ -1281,6 +1441,8 @@ impl Game {
         self.vane = None;
         self.storm = None;
         self.rook = None;
+        self.bell = None;
+        self.ghosts.clear();
         if self.arena.mode != Mode::Circle {
             self.clear_floor(CLEAR_HOLD);
         } else if self.forced.is_none() {
@@ -1293,6 +1455,7 @@ impl Game {
     /// The floor is done: the balls go, and the tower turns (straight floors) or the
     /// next floor simply loads (the arc and roof previews).
     fn clear_floor(&mut self, t: f32) {
+        self.ghosts.clear();
         self.balls.clear();
         self.shots.clear();
         self.state = State::Clear { t };
@@ -1463,7 +1626,7 @@ mod tests {
             for f in t.floors {
                 let width = if matches!(f.kind, FloorKind::Roof(_)) { 7 } else { 13 };
                 assert!(f.rows.iter().all(|r| r.len() == width), "{} is not {width} wide", f.name);
-                assert!(f.rows.iter().flat_map(|r| r.chars()).all(|c| ".wocgrbmySGv".contains(c)), "{} has a stray character", f.name);
+                assert!(f.rows.iter().flat_map(|r| r.chars()).all(|c| ".wocgrbmySGvk".contains(c)), "{} has a stray character", f.name);
             }
         }
         // numbered straight through, and round again after the last tower
@@ -1557,6 +1720,96 @@ mod tests {
             }
         }
         assert!(moved, "no vine moved");
+    }
+
+    #[test]
+    fn every_plain_floor_can_be_cleared() {
+        for n in floors_where(|k| k == FloorKind::Plain) {
+            let mut g = Game::new(None);
+            g.load_floor(n);
+            g.lives = 99;
+            let mut pilot = Pilot::new();
+            let mut secs = 0.0;
+            while g.floor == n && secs < 400.0 {
+                let s = pilot.steer(&g);
+                g.step(s, true);
+                secs += STEP;
+            }
+            assert_eq!(g.floor, n + 1, "floor {n} ({}) not cleared: {} left", levels::floor(n).name, g.left());
+        }
+    }
+
+    #[test]
+    fn clockwork_winds_back_in() {
+        let n = (0..levels::total()).find(|&n| levels::floor(n).rows.iter().any(|r| r.contains('k'))).unwrap();
+        let mut g = Game::new(None);
+        g.load_floor(n);
+        g.state = State::Play;
+        g.balls = vec![Ball { p: V2::new(50.0, 50.0), v: V2::new(0.0, 0.0) }];
+        let i = g.bricks.iter().position(|b| b.is_some_and(|b| b.kind == Kind::Clock)).unwrap();
+        g.hit_brick(i);
+        assert!(g.bricks[i].is_none() && g.ghost(i) == Some(0.0));
+        for _ in 0..((CLOCK_BACK - 0.5) / STEP) as usize {
+            g.wind_clocks();
+        }
+        assert!(g.bricks[i].is_none() && g.ghost(i).unwrap() > 0.9);
+        // a ball on its cell holds it off
+        let (min, max) = g.brick_box(i);
+        g.balls[0].p = (min + max) * 0.5;
+        for _ in 0..(1.0 / STEP) as usize {
+            g.wind_clocks();
+        }
+        assert!(g.bricks[i].is_none());
+        g.balls[0].p = V2::new(50.0, 50.0);
+        g.wind_clocks();
+        assert!(g.bricks[i].is_some_and(|b| b.kind == Kind::Clock) && g.ghost(i).is_none());
+    }
+
+    #[test]
+    fn the_great_bell_can_be_beaten_and_tolls() {
+        let roof = floors_where(|k| k == FloorKind::Roof(RoofBoss::Bell))[0];
+        let mut g = Game::new(None);
+        g.load_floor(roof);
+        assert!(g.bell.is_some());
+        g.lives = 99;
+        let mut pilot = Pilot::new();
+        let (mut tolls, mut stuns) = (0, 0);
+        for _ in 0..(400.0 / STEP) as usize {
+            let s = pilot.steer(&g);
+            let waves = g.bell.as_ref().map_or(0, |b| b.waves.len());
+            let stunned = g.stun > 0.0;
+            g.step(s, true);
+            if g.bell.as_ref().is_some_and(|b| b.waves.len() > waves) {
+                tolls += 1;
+            }
+            if !stunned && g.stun > 0.0 {
+                stuns += 1;
+            }
+            if g.floor != roof {
+                break;
+            }
+        }
+        assert!(tolls > 0, "the bell never tolled");
+        assert_eq!(g.floor, roof + 1, "the bell was never beaten ({tolls} tolls, {stuns} stuns)");
+    }
+
+    #[test]
+    fn a_toll_stuns_only_in_its_loud_arcs() {
+        let roof = floors_where(|k| k == FloorKind::Roof(RoofBoss::Bell))[0];
+        let mut g = Game::new(None);
+        g.load_floor(roof);
+        g.state = State::Play;
+        g.balls = vec![Ball { p: V2::new(50.0, 28.0), v: V2::new(0.0, 0.0) }];
+        let Path::Circle { c, r } = g.arena.path else { panic!() };
+        for (paddle_at, axis, stuns) in [(0.0, 0.0, true), (PI / 2.0, 0.0, false), (PI, 0.0, true), (PI / 2.0, PI / 2.0, true)] {
+            g.stun = 0.0;
+            g.paddle.s = g.arena.path.nearest(c + V2::new(f32::cos(paddle_at), f32::sin(paddle_at)) * r);
+            let b = g.bell.as_mut().unwrap();
+            b.waves = vec![boss::Wave { c, r: r - 1.0, axis, struck: false }];
+            b.tolling = None;
+            g.update_bell();
+            assert_eq!(g.stun > 0.0, stuns, "paddle at {paddle_at}, axis {axis}");
+        }
     }
 
     #[test]

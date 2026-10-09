@@ -4,7 +4,7 @@
 //! scales to any terminal; round things (ball, paddle) get analytic anti-aliasing.
 
 use crate::game::{self, Game, Kind, Mode, LEDGE, BALL_R, BRICK_H, BRICK_W, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_TH, WALL, WORLD_H};
-use crate::boss::{self, Flight, MiniBoss, MiniKind, Rook, Storm, Weathercock};
+use crate::boss::{self, Bell, Flight, MiniBoss, MiniKind, Rook, ShotKind, Storm, Weathercock};
 use crate::levels::{self, RoofBoss, Theme};
 use crate::map;
 use crate::roof::{self, RoofView, Seen, Tilt};
@@ -114,6 +114,19 @@ fn brick_colour(b: &tower::BrickHere, at: V2, time: f32, psx: f32, psy: f32) -> 
         let stem = (b.ly - BRICK_H / 2.0 - (b.lx * 1.4).sin() * 0.4).abs() < psy * 0.6;
         let leaf = ((b.lx * 1.9).sin() * (b.ly * 2.6 + b.lx).cos()) > 0.15;
         base = if stem { [70.0, 60.0, 30.0] } else if leaf { [150.0, 235.0, 110.0] } else { [70.0, 175.0, 70.0] };
+    } else if b.kind == Kind::Clock {
+        // a brass plate with a cog turning in the middle
+        let l = V2::new(b.lx - BRICK_W / 2.0, b.ly - BRICK_H / 2.0);
+        let a = l.y.atan2(l.x) + time * 1.5;
+        let teeth = if (a * 4.0).sin() > 0.0 { 1.25 } else { 0.95 };
+        let d = V2::new(l.x, l.y * 1.15).len();
+        base = if d < 0.35 {
+            [255.0, 225.0, 140.0]
+        } else if d < teeth {
+            [125.0, 86.0, 38.0]
+        } else {
+            [205.0, 155.0, 72.0]
+        };
     } else if b.kind == Kind::Web {
         // silk strands criss-crossing, the wall dim behind
         let strand = (b.lx + b.ly * 1.6).rem_euclid(2.0) < psx || (b.lx - b.ly * 1.6).rem_euclid(2.0) < psx;
@@ -138,6 +151,20 @@ fn brick_colour(b: &tower::BrickHere, at: V2, time: f32, psx: f32, psy: f32) -> 
     c
 }
 
+/// A broken clockwork brick winding back in (`k` of the way): its outline, filling
+/// in from the left as it winds.
+fn ghost_colour(c: Rgb, k: f32, l: V2, psx: f32, psy: f32) -> Rgb {
+    let brass = [205.0, 155.0, 72.0];
+    let edge = l.x < psx || l.y < psy || l.x >= BRICK_W - psx || l.y >= BRICK_H - psy;
+    if edge && ((l.x + l.y) / psx.max(0.3)) as i32 % 2 == 0 {
+        mix(c, brass, 0.55)
+    } else if l.x / BRICK_W < k {
+        mix(c, brass, 0.22)
+    } else {
+        c
+    }
+}
+
 /// Straight floors: whichever face of the tower is under `p`.
 fn tower_face(game: &Game, faces: &Faces, cam: f32, p: V2, ps: f32, bg: Rgb) -> Rgb {
     let Some(s) = tower::sample(p.x, p.y, cam) else { return bg };
@@ -158,6 +185,8 @@ fn tower_face(game: &Game, faces: &Faces, cam: f32, p: V2, ps: f32, bg: Rgb) -> 
         }
     } else if let Some(b) = faces.brick(game, s.n, u, v) {
         brick_colour(&b, V2::new(u, v), game.time, psx, psy)
+    } else if let Some((k, l)) = game.ghost_at(V2::new(u, v)).filter(|_| s.n == game.floor as i64) {
+        ghost_colour(masonry(theme, V2::new(u, v), psx, psy), k, l, psx, psy)
     } else if let Some(leaf) = ivy(s.n, V2::new(u, v)).filter(|_| theme.ivy && !faces.plinth(s.n)) {
         mix([26.0, 62.0, 34.0], [80.0, 140.0, 56.0], leaf)
     } else {
@@ -228,11 +257,17 @@ fn roof_top(game: &Game, roof: &RoofView, q: V2, ps: f32) -> Rgb {
     }
     if let Some(b) = roof.brick(game, q) {
         c = brick_colour(&b, q, game.time, ps, ps);
+    } else if let Some((k, l)) = game.ghost_at(q).filter(|_| game.arena.mode == Mode::Circle) {
+        c = ghost_colour(c, k, l, ps, ps);
     }
     // still climbing: the roof's boss waits up there
-    let (waiting_vane, waiting_storm, waiting_rook);
-    let (mut vane, mut storm, mut rook) = (game.vane.as_ref(), game.storm.as_ref(), game.rook.as_ref());
+    let (waiting_vane, waiting_storm, waiting_rook, waiting_bell);
+    let (mut vane, mut storm, mut rook, mut bell) = (game.vane.as_ref(), game.storm.as_ref(), game.rook.as_ref(), game.bell.as_ref());
     match game.waiting_roof_boss() {
+        Some(RoofBoss::Bell) => {
+            waiting_bell = Bell::new(roof.centre);
+            bell = Some(&waiting_bell);
+        }
         Some(RoofBoss::Rook) => {
             waiting_rook = Rook::new(roof.centre);
             rook = Some(&waiting_rook);
@@ -257,6 +292,81 @@ fn roof_top(game: &Game, roof: &RoofView, q: V2, ps: f32) -> Rgb {
     }
     if let Some(r) = rook {
         c = rook_nest(r, roof, q, ps, game.time, c);
+    }
+    if let Some(b) = bell {
+        c = great_bell(b, roof, q, ps, game.time, c);
+    }
+    c
+}
+
+/// The Great Bell seen from above, over roof point `q` on top of `c`: its rings of
+/// sound spreading (bright along the loud arcs, faint between), the marks on the
+/// paddle's ring where they will land, the bronze bell with its rim, shoulder and
+/// crown, the oak headstock across it, shivering before it tolls.
+fn great_bell(b: &Bell, roof: &RoofView, q: V2, ps: f32, time: f32, mut c: Rgb) -> Rgb {
+    let warn = [255.0, 105.0, 150.0];
+    // where the loud arcs of a ring from `from` along `axis` will cross the paddle's
+    // ring: a dashed line, so it never reads as the paddle
+    let mark = |from: V2, axis: f32, urgent: f32, c: Rgb| {
+        let off = q - roof.centre;
+        let dash = (off.y.atan2(off.x) * roof.ring / 1.6).rem_euclid(2.0) < 1.0;
+        if (off.len() - roof.ring).abs() < 0.9 && dash && boss::loud(from, axis, q) {
+            let pulse = 0.5 + 0.5 * (time * (10.0 + 30.0 * urgent)).sin();
+            mix(c, warn, 0.45 + 0.5 * pulse)
+        } else {
+            c
+        }
+    };
+    if let Some(left) = b.tolling {
+        c = mark(b.p, b.axis, 1.0 - left / boss::TOLL_WARN, c);
+    }
+    for w in &b.waves {
+        if w.r < roof.ring + 1.0 {
+            c = mark(w.c, w.axis, (w.r / roof.ring).min(1.0), c);
+        }
+        let d = ((q - w.c).len() - w.r).abs();
+        if d < boss::WAVE_TH {
+            let fade = (1.0 - w.r / (roof::RIM + 2.0)).clamp(0.5, 1.0);
+            let k = (1.0 - d / boss::WAVE_TH) * fade;
+            c = if w.loud_towards(q) { mix(c, [255.0, 190.0, 215.0], 0.9 * k) } else { mix(c, [200.0, 190.0, 200.0], 0.15 * k) };
+        }
+    }
+    // shivering before a toll
+    let shake = if b.tolling.is_some() { V2::new((b.t * 60.0).sin() * 0.3, (b.t * 47.0).cos() * 0.3) } else { V2::default() };
+    let l = q - b.p - shake;
+    let dir = b.dir();
+    let side = V2::new(-dir.y, dir.x);
+    let blink = b.hurt > 0.0 && (b.hurt * 12.0) as i32 % 2 == 0;
+    // the headstock: a dark oak beam across the swing, iron-strapped, over the crown
+    let (along, across) = (l.dot(side), l.dot(dir));
+    if along.abs() < boss::BELL_R + 1.6 && across.abs() < 0.8 {
+        let strap = (along.abs() - 1.6).abs() < 0.3;
+        let wood = if strap { [60.0, 60.0, 70.0] } else { mix([110.0, 72.0, 40.0], [50.0, 32.0, 18.0], across.abs() / 0.8) };
+        return if blink { mix(wood, [255.0, 255.0, 255.0], 0.75) } else { wood };
+    }
+    let d = l.len();
+    if d < boss::BELL_R + ps {
+        // tipped along its swing: lit on the side swinging up
+        let tip = b.swing.sin() * 0.6;
+        let k = d / boss::BELL_R;
+        let mut bronze = if k > 0.84 {
+            // the lip, bright
+            mix([255.0, 215.0, 120.0], [190.0, 135.0, 55.0], (k - 0.84) / 0.16)
+        } else if k > 0.5 {
+            mix([175.0, 120.0, 50.0], [225.0, 165.0, 75.0], (k - 0.5) / 0.34)
+        } else if k > 0.28 {
+            [150.0, 100.0, 42.0]
+        } else {
+            [85.0, 58.0, 30.0]
+        };
+        bronze = scale(bronze, 1.0 + 0.25 * (l.dot(dir) / boss::BELL_R) * tip);
+        if (k - 0.5).abs() < ps * 0.6 / boss::BELL_R {
+            bronze = scale(bronze, 0.6);
+        }
+        if blink {
+            bronze = mix(bronze, [255.0, 255.0, 255.0], 0.75);
+        }
+        c = mix(c, bronze, (boss::BELL_R - d) / ps + 0.5);
     }
     c
 }
@@ -452,6 +562,47 @@ fn spider(g: &MiniBoss, l: V2) -> Option<Rgb> {
     c
 }
 
+/// The Jack, in its own units (`l` from its middle, y down): an iron figure in a
+/// helmet, marching, its hammer raised over its shoulder and brought down on the
+/// little gold bell at its side when it strikes (raised higher, eyes lit, just before).
+fn jack(g: &MiniBoss, l: V2) -> Option<Rgb> {
+    let seg = |a: V2, b: V2, r: f32| (l - physics::closest_on_segment(l, a, b)).len() < r;
+    let iron = |y: f32| mix([150.0, 155.0, 175.0], [60.0, 62.0, 78.0], (y + 3.5) / 7.0);
+    let brass = [230.0, 175.0, 70.0];
+    // the hammer: raised (wound back further while it aims), down on the bell as it strikes
+    let fall = (g.swung / 0.35).min(1.0);
+    let raised = if g.aiming() && g.swung > 0.35 { -2.3 } else { -1.8 };
+    let ang = 0.35 + (raised - 0.35) * (fall * fall * (3.0 - 2.0 * fall));
+    let shoulder = V2::new(1.0, -0.9);
+    let reach = V2::new(ang.cos(), ang.sin());
+    let head = shoulder + reach * 2.4;
+    let eye = (V2::new(l.x.abs(), l.y) - V2::new(0.35, -2.2)).len() < 0.28;
+    let march = (g.t * 6.0).sin() * 0.4;
+    let c = if eye {
+        Some(if g.aiming() { [255.0, 220.0, 120.0] } else { [255.0, 90.0, 50.0] })
+    } else if (l - head).len() < 0.75 || seg(head - V2::new(-reach.y, reach.x) * 0.8, head + V2::new(-reach.y, reach.x) * 0.8, 0.45) {
+        Some(mix([175.0, 178.0, 195.0], [70.0, 72.0, 88.0], (l - head).dot(V2::new(0.6, 0.8)) + 0.5))
+    } else if seg(shoulder, head, 0.26) {
+        Some([165.0, 110.0, 55.0])
+    } else if (l - V2::new(3.0, 0.4)).len() < 0.95 && l.y < 1.2 || seg(V2::new(2.1, 1.1), V2::new(3.9, 1.1), 0.25) {
+        Some(if g.swung < 0.15 { [255.0, 250.0, 200.0] } else { brass })
+    } else if (l - V2::new(0.0, -2.2)).len() < 0.95 || seg(V2::new(-0.9, -2.5), V2::new(0.9, -2.5), 0.3) {
+        Some(iron(l.y - 1.0))
+    } else if l.x.abs() < 1.1 && l.y > -1.3 && l.y < 1.4 {
+        Some(if (l.y - 0.6).abs() < 0.25 { brass } else { iron(l.y) })
+    } else if seg(V2::new(-0.5, 1.3), V2::new(-0.6 + march, 3.3), 0.3) || seg(V2::new(0.5, 1.3), V2::new(0.6 - march, 3.3), 0.3) {
+        Some(iron(l.y))
+    } else if seg(V2::new(-1.0, -0.9), V2::new(-1.6, 0.8), 0.28) {
+        Some(iron(l.y))
+    } else {
+        None
+    };
+    if g.hurt > 0.0 && (g.hurt * 12.0) as i32 % 2 == 0 {
+        return c.map(|c| mix(c, [255.0, 255.0, 255.0], 0.75));
+    }
+    c
+}
+
 /// The Gargoyle, in its own units (`l` from its centre, y down): stone head with
 /// horns and red eyes (glowing hot just before it spits), a squat body with claws,
 /// and scalloped wings beating up and down.
@@ -532,6 +683,7 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
             let drawn = match g.kind {
                 MiniKind::Gargoyle => gargoyle(g, l),
                 MiniKind::Spider => spider(g, l),
+                MiniKind::Jack => jack(g, l * (1.0 / boss::JACK_SCALE)),
             };
             if let Some(gc) = drawn {
                 c = gc;
@@ -541,13 +693,18 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
     for shot in &game.shots {
         let d = (p - shot.p).len();
         if d < boss::SHOT_R + ps {
-            let blob = if shot.web {
+            let blob = match shot.kind {
                 // a tangle of silk: strands across a pale glob
-                let l = p - shot.p;
-                let strand = (l.x * 3.0).sin().abs() < 0.3 || (l.y * 3.0).sin().abs() < 0.3;
-                if strand { [240.0, 240.0, 250.0] } else { [150.0, 150.0, 165.0] }
-            } else {
-                mix([255.0, 240.0, 150.0], [230.0, 60.0, 20.0], d / boss::SHOT_R)
+                ShotKind::Web => {
+                    let l = p - shot.p;
+                    let strand = (l.x * 3.0).sin().abs() < 0.3 || (l.y * 3.0).sin().abs() < 0.3;
+                    if strand { [240.0, 240.0, 250.0] } else { [150.0, 150.0, 165.0] }
+                }
+                // a ringing chime: a bright ring with a hollow middle
+                ShotKind::Chime => {
+                    if d > boss::SHOT_R * 0.45 { mix([255.0, 250.0, 210.0], [240.0, 180.0, 60.0], d / boss::SHOT_R) } else { mix(c, [255.0, 230.0, 140.0], 0.3) }
+                }
+                ShotKind::Fire => mix([255.0, 240.0, 150.0], [230.0, 60.0, 20.0], d / boss::SHOT_R),
             };
             c = mix(c, blob, (boss::SHOT_R - d) / ps + 0.5);
         }
