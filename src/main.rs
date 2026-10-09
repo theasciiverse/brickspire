@@ -122,7 +122,8 @@ fn run() -> io::Result<()> {
     let mut last_log = Instant::now();
     let mut last_state = game.state;
     let mut paused = false;
-    let mut best = 0u32;
+    let mut best = load_best();
+    let mut saved = best;
     let mut glyphs = glyphs_arg();
 
     let result = loop {
@@ -187,6 +188,10 @@ fn run() -> io::Result<()> {
             last_state = game.state;
         }
         best = best.max(game.score);
+        if game.state == State::Over && best > saved {
+            save_best(best);
+            saved = best;
+        }
         if now.duration_since(last_log) >= Duration::from_millis(500) {
             last_log = now;
             debug!("snapshot: {} steer {steer:?} via {:?}", summary(&game), input.last_source);
@@ -202,6 +207,9 @@ fn run() -> io::Result<()> {
     let _ = execute!(io::stdout(), DisableMouseCapture);
     if kitty {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+    }
+    if best > saved {
+        save_best(best);
     }
     ratatui::restore();
     result
@@ -264,6 +272,31 @@ fn summary(game: &Game) -> String {
     )
 }
 
+/// Where the best score is kept: the platform's data folder.
+fn best_path() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+    Some(base.join("brickspire").join("best"))
+}
+
+fn load_best() -> u32 {
+    best_path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| s.trim().parse().ok()).unwrap_or(0)
+}
+
+fn save_best(best: u32) {
+    let Some(p) = best_path() else { return };
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match std::fs::write(&p, format!("{best}\n")) {
+        Ok(()) => info!("best score {best} saved to {}", p.display()),
+        Err(e) => log::warn!("could not save the best score to {}: {e}", p.display()),
+    }
+}
+
 /// One line of text centred over the world, on black.
 fn banner(msg: &str, y: u16, area: Rect, buf: &mut Buffer) {
     let w = (msg.chars().count() as u16).min(area.width);
@@ -275,12 +308,20 @@ fn banner(msg: &str, y: u16, area: Rect, buf: &mut Buffer) {
 fn hud(game: &Game, input: &Input, best: u32, paused: bool, glyphs: bool, area: Rect, buf: &mut Buffer) {
     let bar = Style::default().bg(Color::Rgb(0, 0, 0)).fg(AMBER);
     let grey = bar.fg(Color::Rgb(170, 170, 170));
-    let lives: String = "▬ ".repeat(game.lives as usize);
+    let lives: String = if game.lives <= 3 { "▬ ".repeat(game.lives as usize) } else { format!("▬×{} ", game.lives) };
     let (t, first) = levels::tower_of(game.floor);
     let tower = &levels::TOWERS[t];
     let top = Line::from(vec![
         Span::styled(" BRICKSPIRE ", bar.add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" {} · FLOOR {} {} ", tower.name.to_uppercase(), game.floor + 1 - first, game.floor_name), grey),
+        // (during a boss fight the boss's name and health take the floor name's room)
+        Span::styled(
+            if game.boss_left() {
+                format!(" {} · FLOOR {} ", tower.name.to_uppercase(), game.floor + 1 - first)
+            } else {
+                format!(" {} · FLOOR {} {} ", tower.name.to_uppercase(), game.floor + 1 - first, game.floor_name)
+            },
+            grey,
+        ),
         Span::styled(format!(" SCORE {:06} ", game.score), bar.add_modifier(Modifier::BOLD)),
         // (room for a boss's health instead, during a fight)
         Span::styled(if game.boss_left() { String::new() } else { format!(" BEST {best:06} ") }, grey),
