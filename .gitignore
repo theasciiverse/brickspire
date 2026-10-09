@@ -1,3 +1,6 @@
 target/
 *.log
 .claude/scheduled_tasks.lock
+*.ppm
+*.ppm.txt
+*.png

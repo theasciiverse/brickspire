@@ -1,0 +1,244 @@
+//! Glyph mode: character graphics, no half-blocks. ASCII plus box-drawing lines.
+//!
+//! A cell is about twice as tall as it is wide, so the scale is picked to make a brick
+//! exactly whole cells: 4 cells by 1 row at the smallest size (the field is then
+//! 67x19, a classic 80x24 terminal with room for the HUD), 8 by 2 at the next. The
+//! view is nudged so the brick grid lands on cell edges. Same world, same physics as
+//! pixel mode; only the drawing differs.
+
+use crate::game::{self, Game, Kind, BRICK_H, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, WORLD_H, WORLD_W};
+use crate::physics::{Path, V2};
+use crate::render::View;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Color;
+
+const SKY: Color = Color::Rgb(6, 8, 22);
+const FIELD: Color = Color::Rgb(20, 22, 42);
+const BALCONY: Color = Color::Rgb(13, 11, 22);
+const STEEL: Color = Color::Rgb(150, 165, 190);
+const BRASS: Color = Color::Rgb(220, 165, 60);
+const PADDLE_END: Color = Color::Rgb(40, 210, 190);
+const PADDLE_BODY: Color = Color::Rgb(240, 175, 60);
+const RAIL: Color = Color::Rgb(70, 90, 125);
+
+/// Pixels per world unit at size step `k`: a brick is `4k` cells by `k` rows.
+fn scale_for(k: u32) -> f32 {
+    2.0 * k as f32 / BRICK_H
+}
+
+/// The largest size that fits, aligned so `align` (the brick grid's corner) sits on
+/// a cell corner.
+pub fn view(area: Rect, align: V2) -> View {
+    let (w, h) = (area.width as f32, area.height as f32 * 2.0);
+    let fits = |k: u32| WORLD_W * scale_for(k) <= w && WORLD_H * scale_for(k) <= h;
+    let k = (1..8).take_while(|&k| fits(k)).last().unwrap_or(1);
+    let s = scale_for(k);
+    let mut ox = (w - WORLD_W * s) / 2.0;
+    let mut oy = (h - WORLD_H * s) / 2.0;
+    let ax = align.x * s + ox;
+    ox += ax.round() - ax;
+    let ay = align.y * s + oy;
+    oy += (ay / 2.0).round() * 2.0 - ay;
+    View { area, s, ox, oy }
+}
+
+fn rgb(c: [u8; 3]) -> Color {
+    Color::Rgb(c[0], c[1], c[2])
+}
+
+fn dim(c: [u8; 3], k: f32) -> Color {
+    Color::Rgb((c[0] as f32 * k) as u8, (c[1] as f32 * k) as u8, (c[2] as f32 * k) as u8)
+}
+
+fn hash(x: u32, y: u32) -> u32 {
+    let mut h = x.wrapping_mul(0x8da6_b343) ^ y.wrapping_mul(0xd816_3841);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xcb1a_b31f);
+    h ^ (h >> 16)
+}
+
+struct Canvas<'a> {
+    buf: &'a mut Buffer,
+    view: &'a View,
+}
+
+impl Canvas<'_> {
+    /// Cell column and row (relative to the area) holding world point `p`.
+    fn cell(&self, p: V2) -> (i32, i32) {
+        let px = p.x * self.view.s + self.view.ox;
+        let py = p.y * self.view.s + self.view.oy;
+        (px.floor() as i32, (py / 2.0).floor() as i32)
+    }
+
+    /// The world point at the middle of a cell.
+    fn centre(&self, c: i32, r: i32) -> V2 {
+        V2::new((c as f32 + 0.5 - self.view.ox) / self.view.s, (r as f32 * 2.0 + 1.0 - self.view.oy) / self.view.s)
+    }
+
+    fn put(&mut self, c: i32, r: i32, sym: &str, fg: Color, bg: Option<Color>) {
+        let a = self.view.area;
+        if c < 0 || r < 0 || c >= a.width as i32 || r >= a.height as i32 {
+            return;
+        }
+        let cell = &mut self.buf[(a.x + c as u16, a.y + r as u16)];
+        cell.set_symbol(sym).set_fg(fg);
+        if let Some(bg) = bg {
+            cell.set_bg(bg);
+        }
+    }
+
+    fn bg(&mut self, c: i32, r: i32, bg: Color) {
+        self.put(c, r, " ", bg, Some(bg));
+    }
+}
+
+/// A line drawn along a path, one mark per cell it passes through.
+fn trace(cv: &mut Canvas, path: &Path, sym: &str, fg: Color) {
+    let n = (path.len() * 4.0) as usize;
+    let mut last = (i32::MIN, i32::MIN);
+    for i in 0..=n {
+        let (c, r) = cv.cell(path.point(path.len() * i as f32 / n as f32));
+        if (c, r) != last {
+            cv.put(c, r, sym, fg, None);
+            last = (c, r);
+        }
+    }
+}
+
+/// The character for a stretch of paddle lying along cell-space direction `t`.
+fn bar(t: V2) -> &'static str {
+    let slope = t.y.abs() / t.x.abs().max(1e-6);
+    if slope < 0.45 {
+        "="
+    } else if slope > 2.2 {
+        "|"
+    } else if (t.x > 0.0) == (t.y > 0.0) {
+        "\\"
+    } else {
+        "/"
+    }
+}
+
+pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
+    let area = view.area;
+    let mut cv = Canvas { buf, view };
+    let (w, h) = (area.width as i32, area.height as i32);
+
+    // sky with stars fixed to the screen, twinkling
+    for r in 0..h {
+        for c in 0..w {
+            let hv = hash(c as u32, r as u32);
+            if hv % 53 == 0 {
+                let tw = 0.5 + 0.5 * (game.time * (0.6 + (hv >> 22) as f32 / 1024.0 * 1.5) + hv as f32).sin();
+                let sym = ["·", ".", "+", "*"][(hv >> 6) as usize % 4];
+                let k = 0.3 + 0.7 * tw;
+                cv.put(c, r, sym, Color::Rgb((200.0 * k) as u8, (205.0 * k) as u8, (235.0 * k) as u8), Some(SKY));
+            } else {
+                cv.bg(c, r, SKY);
+            }
+        }
+    }
+
+    // the field: the tower's face, or the round roof
+    for r in 0..h {
+        for c in 0..w {
+            let p = cv.centre(c, r);
+            match game.arena.path {
+                Path::Circle { c: centre, r: rad } => {
+                    if (p - centre).len() < rad + 1.5 {
+                        cv.bg(c, r, FIELD);
+                    }
+                }
+                Path::Arc { c: centre, r: rad, .. } => {
+                    if p.x >= FIELD_X0 && p.x < FIELD_X1 && p.y >= FIELD_TOP && p.y < WORLD_H {
+                        cv.bg(c, r, if (p - centre).len() > rad + 1.5 { BALCONY } else { FIELD });
+                    }
+                }
+                Path::Line { .. } => {
+                    if p.x >= FIELD_X0 && p.x < FIELD_X1 && p.y >= FIELD_TOP && p.y < WORLD_H {
+                        cv.bg(c, r, FIELD);
+                    }
+                }
+            }
+        }
+    }
+    if !matches!(game.arena.path, Path::Line { .. }) {
+        trace(&mut cv, &game.arena.path, "·", RAIL);
+    }
+
+    // walls: steel pipes with brass bands
+    if game.arena.walls() {
+        let (left, top) = cv.cell(V2::new(FIELD_X0, FIELD_TOP));
+        let (right, bottom) = cv.cell(V2::new(FIELD_X1, WORLD_H - 0.01));
+        let (left, top) = (left - 1, top - 1);
+        for r in top + 1..=bottom {
+            let band = (r - top) % 5 == 0;
+            let (sym, fg) = if band { ("╫", BRASS) } else { ("║", STEEL) };
+            cv.put(left, r, sym, fg, Some(SKY));
+            cv.put(right, r, sym, fg, Some(SKY));
+        }
+        for c in left + 1..right {
+            let band = (c - left) % 8 == 0;
+            cv.put(c, top, if band { "╪" } else { "═" }, if band { BRASS } else { STEEL }, Some(SKY));
+        }
+        cv.put(left, top, "╔", STEEL, Some(SKY));
+        cv.put(right, top, "╗", STEEL, Some(SKY));
+    }
+
+    // bricks: whole cells, `[` and `]` marking each one's ends
+    for (i, brick) in game.bricks.iter().enumerate() {
+        let Some(brick) = brick else { continue };
+        let (min, max) = game.brick_box(i);
+        let (c0, r0) = cv.cell(min + V2::new(0.01, 0.01));
+        let (c1, r1) = cv.cell(max - V2::new(0.01, 0.01));
+        let base = game::brick_rgb(brick.kind);
+        let (bg, fg) = if brick.flash > 0.0 {
+            (Color::Rgb(255, 255, 255), dim(base, 0.6))
+        } else {
+            (rgb(base), dim(base, 0.4))
+        };
+        let fill = match brick.kind {
+            Kind::Plain(_) => " ",
+            Kind::Steel => if brick.hp > 1 { ":" } else { "." },
+            Kind::Gilt => "*",
+        };
+        for r in r0..=r1 {
+            for c in c0..=c1 {
+                let sym = if c == c0 { "[" } else if c == c1 { "]" } else { fill };
+                cv.put(c, r, sym, fg, Some(bg));
+            }
+        }
+    }
+
+    for part in &game.particles {
+        let (c, r) = cv.cell(part.p);
+        let sym = if part.life > 0.35 { "*" } else { "." };
+        cv.put(c, r, sym, dim(part.rgb, (part.life / 0.5).min(1.0)), None);
+    }
+
+    // the paddle: one mark per cell along it, teal at the ends
+    let (a, b, _) = game.paddle_segment();
+    let t = (b - a).norm();
+    let sym = bar(V2::new(t.x * view.s, t.y * view.s / 2.0));
+    let steps = (PADDLE_HALF * 8.0) as usize;
+    for i in 0..=steps {
+        let u = i as f32 / steps as f32;
+        let (c, r) = cv.cell(a + (b - a) * u);
+        let end = (u - 0.5).abs() * 2.0 * PADDLE_HALF > PADDLE_HALF - 2.0;
+        cv.put(c, r, sym, if end { PADDLE_END } else { PADDLE_BODY }, None);
+    }
+
+    // balls: a mark that sits high, middle or low in its cell, so motion reads finer
+    // than one row at a time
+    for p in game.shown_balls() {
+        let py = (p.y * view.s + view.oy) / 2.0;
+        let sym = match py.rem_euclid(1.0) {
+            f if f < 0.33 => "°",
+            f if f < 0.67 => "o",
+            _ => ".",
+        };
+        let (c, r) = cv.cell(p);
+        cv.put(c, r, sym, Color::Rgb(255, 255, 240), None);
+    }
+}

@@ -156,6 +156,37 @@ state snapshot about every 500 ms (paddle position and path, balls, active power
 - [ ] Offer a "paddle-centric" view on the roof (the arena turns and the paddle stays at the
       bottom, as Circanoid allows) as an option?
 
+## Running
+
+```bash
+cargo run --release                         # play
+cargo run --release -- --path arc           # preview the mini-boss arc on the same field
+cargo run --release -- --path circle        # preview the roof ring (a small test block)
+cargo run --release -- --floor 3            # start on floor 3
+cargo run --release -- --glyphs             # character graphics (g flips in the game)
+RUST_LOG=debug cargo run --release 2>brickspire.log
+cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc]   # headless frame
+cargo test --release
+```
+
+## Code map
+
+- `physics.rs`: `V2`, the paddle's `Path` (line, arc, circle; arc length `s`, +s is right
+  at the bottom), and swept collisions (capsules, boxes as four edge capsules, planes).
+- `game.rs`: the rules at a fixed 120 Hz step; `Arena` per mode, bricks on a grid,
+  paddle bat (normal turned up to 60 degrees by where it hits), the 18% minimum share
+  on straight floors, lives, score, particles, and the autoplay `Pilot`.
+- `levels.rs`: floors as text grids.
+- `render.rs`: pixel mode, per-pixel half-block shading of the world, scaled to any terminal.
+- `glyph.rs`: glyph mode, ASCII and box-drawing only. Scaled so a brick is whole cells
+  (4x1 at the smallest, a 67x19 field that fits 80x24; 8x2 next), grid aligned to cells.
+- `input.rs`: keys (exact or timing), mouse chase and click, gamepad (stick aims on the roof).
+
 ## Status
 
-Design/ideation stage only. No code yet. Came up in conversation with Claude, 2026-10-09.
+Build step 1 done (2026-10-09): flat floors are playable with keys, mouse and gamepad;
+four floors (Ground Floor, The Spire, Chequers, Twin Lanterns), ordinary, steel and gilt
+bricks, three lives, score, pixel and glyph graphics. The paddle physics already runs on all three paths, and
+`--path arc` / `--path circle` preview them on a plain field; autoplay clears floors
+in all three modes without the ball leaving the field (tested). Next: step 2, the
+tower renderer and the spiral turn between floors.
