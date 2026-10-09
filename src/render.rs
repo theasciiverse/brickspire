@@ -803,6 +803,8 @@ struct Scene<'a> {
     tilt: Option<(Tilt, f32)>,
     roof: Option<RoofView>,
     game: &'a Game,
+    /// The serpent's neck, once per frame, and the box round it.
+    neck: Option<([V2; 10], V2, V2)>,
 }
 
 /// The scenery under world point `p`: the tower's side, or, near the roof, whatever
@@ -834,9 +836,8 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
             // the scaffold's ropes, up to the lintel
             c = mix(c, [190.0, 170.0, 125.0], 0.85);
         }
-        if g.kind == MiniKind::Serpent && p.y > FIELD_TOP {
+        if let Some((neck, ..)) = sc.neck.filter(|&(_, lo, hi)| p.y > FIELD_TOP && p.x > lo.x && p.y > lo.y && p.x < hi.x && p.y < hi.y) {
             // its neck, up over the lintel: scaled, a pale belly down one side
-            let neck = g.neck();
             let (mut best, mut at) = (f32::MAX, 0.0);
             for (k, w) in neck.windows(2).enumerate() {
                 let q = physics::closest_on_segment(p, w[0], w[1]);
@@ -1046,6 +1047,12 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         tilt: game.tilt().map(|k| (roof::tilt(k, centre), roof::ground_below(game.floor))),
         roof,
         game,
+        neck: game.boss.as_ref().filter(|g| g.kind == MiniKind::Serpent).map(|g| {
+            let neck = g.neck();
+            let lo = neck.iter().fold(V2::new(f32::MAX, f32::MAX), |m, q| V2::new(m.x.min(q.x), m.y.min(q.y))) - V2::new(2.0, 2.0);
+            let hi = neck.iter().fold(V2::new(f32::MIN, f32::MIN), |m, q| V2::new(m.x.max(q.x), m.y.max(q.y))) + V2::new(2.0, 2.0);
+            (neck, lo, hi)
+        }),
     };
     let mut px = vec![[0.0f32; 3]; w * h];
     for j in 0..h {
