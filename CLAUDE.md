@@ -19,9 +19,10 @@ on where you are on the tower, and the camera explains each change:
 | Mini-boss floors (partway up) | a balcony curving round the tower | an arc along the lower part of the screen |
 | The roof (tower boss) | straight down onto the round tower top | a full circle round the whole arena |
 
-On the arc and the circle the paddle stays the same paddle, turned to follow the curve (tangent
-to the path where it sits). The angle you meet the ball at depends on where you are on the curve.
-That is a new skill to learn, and it arrives just as the bosses get hard.
+The paddle always lies along the tangent of its path (decided 2026-10-09). On the straight path
+that means horizontal, as in Arkanoid. On the arc and the circle it tilts with the curve, so
+where you meet the ball sends it off at different angles. That change in dynamics is the point
+of the boss fights: a new skill to learn, arriving just as the bosses get hard.
 
 ## Prior art (checked 2026-10-09)
 
@@ -114,6 +115,7 @@ state snapshot about every 500 ms (paddle position and path, balls, active power
 
 ## Open questions
 
+- [ ] How much of a circle is the mini-boss arc: a half circle, or less?
 - [ ] How many towers, and a theme per tower?
 - [ ] Two-player co-op or versus over iroh? Doh It Again had both.
 - [ ] A level editor? Doh It Again had one.
