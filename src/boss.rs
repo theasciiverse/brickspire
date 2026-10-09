@@ -19,6 +19,10 @@
 //! the paddle (a hit ices it over: it slides, slow to start and slow to stop) and
 //! every few hits freezes a row of ice bricks beneath itself.
 //!
+//! The last tower's is the Mason's apprentice, on a scaffold plank slung from the
+//! lintel on two ropes, a hod of bricks beside him. He throws bricks at the paddle
+//! (a hit chips it: shorter for a while) and every few hits lays a row of bricks.
+//!
 //! The first tower's roof boss is the Storm Cloud: a thundercloud drifting over the
 //! roof with a glowing core, the target. The ball always flies straight under it; its
 //! threat is aimed at the paddle instead: it marks a stretch of the ring, and a moment
@@ -37,6 +41,12 @@
 //! paddle where an arc crosses it. The ring is marked where the arcs will land, so
 //! the paddle can step into the quiet between them. Its swing turns slowly round;
 //! every few hits it lurches a quarter turn and tolls twice.
+//!
+//! The last tower's roof boss, the last of all, is the Mason, who built the tower. He
+//! works inside a little fort of bricks in the middle of the roof, putting back
+//! whatever the ball breaks, a brick at a time (three in a hurry, every few hits).
+//! He lobs bricks at the paddle: the ring is marked where one will land, and a
+//! paddle still there is stunned. Hurt, he lobs two at a time, one wide.
 //!
 //! The fourth tower's roof boss is the Weathercock: a giant iron weathervane in the
 //! middle of the roof, roaming round it in a slow figure. Its arrow swings slowly
@@ -57,6 +67,10 @@ pub const SERPENT_HALF: V2 = V2::new(5.0, 3.6);
 /// How much bigger the serpent's head is drawn than its sprite's own units.
 pub const SERPENT_SCALE: f32 = 1.3;
 const SPRAY_SPEED: f32 = 28.0;
+pub const APPRENTICE_HALF: V2 = V2::new(7.2, 4.6);
+/// How much bigger the apprentice and his scaffold are drawn than their own units.
+pub const APPRENTICE_SCALE: f32 = 1.2;
+const THROW_SPEED: f32 = 32.0;
 pub const JACK_HALF: V2 = V2::new(5.4, 4.9);
 /// How much bigger the Jack is drawn than its sprite's own units.
 pub const JACK_SCALE: f32 = 1.4;
@@ -86,6 +100,8 @@ pub enum ShotKind {
     Chime,
     /// The serpent's freezing spray: ices the paddle over.
     Spray,
+    /// The apprentice's brick: chips the paddle shorter.
+    Brick,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -156,6 +172,7 @@ impl MiniBoss {
             MiniKind::Spider => SPIDER_HALF,
             MiniKind::Jack => JACK_HALF,
             MiniKind::Serpent => SERPENT_HALF,
+            MiniKind::Apprentice => APPRENTICE_HALF,
         }
     }
 
@@ -208,6 +225,8 @@ impl MiniBoss {
                 WORLD_W / 2.0 + (SWAY + 1.0) * (self.phase * 0.9).sin(),
                 12.0 + 2.5 * (self.t * 1.1 * self.rage()).sin(),
             ),
+            // his scaffold swinging along on its ropes
+            MiniKind::Apprentice => V2::new(WORLD_W / 2.0 + (SWAY - 3.0) * (self.phase * 0.7).sin(), 11.5 + 2.5 * (self.t * 0.6).sin()),
             MiniKind::Jack => {
                 let ticks = self.phase * 2.2;
                 let step = (ticks.fract() * 4.0).min(1.0);
@@ -229,6 +248,7 @@ impl MiniBoss {
             + match self.kind {
                 MiniKind::Jack => V2::new(3.0, 0.8) * JACK_SCALE,
                 MiniKind::Serpent => V2::new(0.0, 2.6),
+                MiniKind::Apprentice => V2::new(0.5, -1.5) * APPRENTICE_SCALE,
                 _ => V2::new(0.0, 1.0),
             };
         let (kind, speed) = match self.kind {
@@ -236,6 +256,7 @@ impl MiniBoss {
             MiniKind::Spider => (ShotKind::Web, WEB_SPEED),
             MiniKind::Jack => (ShotKind::Chime, CHIME_SPEED),
             MiniKind::Serpent => (ShotKind::Spray, SPRAY_SPEED),
+            MiniKind::Apprentice => (ShotKind::Brick, THROW_SPEED),
         };
         shots.push(Shot { p: mouth, v: (target - mouth).norm() * speed, kind });
         self.shots_fired += 1;
@@ -746,6 +767,134 @@ impl Bell {
     }
 }
 
+/// The Mason: his size (the target), and how far he works about inside his fort.
+pub const MASON_R: f32 = 3.0;
+const MASON_HP: u8 = 20;
+const MASON_ROAM: V2 = V2::new(5.5, 1.2);
+/// Seconds between lobs (fewer when hurt), how long a brick is in the air (the
+/// mark on the ring shows meanwhile), and half the marked stretch, as an angle.
+const LOB_EVERY: f32 = 4.0;
+pub const LOB_TIME: f32 = 1.3;
+pub const LOB_SPAN: f32 = 0.2;
+/// Seconds between putting bricks back (fewer when hurt), and hits between hurrying
+/// (three at once).
+const BUILD_EVERY: f32 = 3.0;
+const HURRY_EVERY: u8 = 4;
+
+/// A brick in the air: where round the ring it lands, seconds left, where from.
+#[derive(Clone, Copy, Debug)]
+pub struct Lob {
+    pub a: f32,
+    pub left: f32,
+    pub from: V2,
+}
+
+impl Lob {
+    /// Where it is now, and how high (0 at either end, 1 at the top of its arc).
+    pub fn at(&self, c: V2, r: f32) -> (V2, f32) {
+        let k = 1.0 - self.left / LOB_TIME;
+        let to = c + V2::new(self.a.cos(), self.a.sin()) * r;
+        (self.from + (to - self.from) * k, 4.0 * k * (1.0 - k))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Mason {
+    home: V2,
+    pub p: V2,
+    pub hp: u8,
+    pub max: u8,
+    pub hurt: f32,
+    pub t: f32,
+    pub lobs: Vec<Lob>,
+    next_lob: f32,
+    next_build: f32,
+    /// Seconds since he last laid a brick (his trowel's flourish).
+    pub laid: f32,
+    lobbed: u32,
+    since_hurry: u8,
+}
+
+impl Mason {
+    pub fn new(home: V2) -> Mason {
+        Mason {
+            home,
+            p: home,
+            hp: MASON_HP,
+            max: MASON_HP,
+            hurt: 0.0,
+            t: 0.0,
+            lobs: Vec::new(),
+            next_lob: 3.0,
+            next_build: BUILD_EVERY,
+            laid: 1.0,
+            lobbed: 0,
+            since_hurry: 0,
+        }
+    }
+
+    fn rage(&self) -> f32 {
+        1.0 + (1.0 - self.hp as f32 / self.max as f32) * 0.8
+    }
+
+    /// Work for `dt`; while `live`, lob at `target` (an angle round the ring). Returns
+    /// where bricks landed this step, and whether it is time to put one back.
+    pub fn update(&mut self, dt: f32, live: bool, target: f32) -> (Vec<f32>, bool) {
+        self.t += dt;
+        self.hurt = (self.hurt - dt).max(0.0);
+        self.laid += dt;
+        self.p = self.home + V2::new(MASON_ROAM.x * (self.t * 0.5).sin(), MASON_ROAM.y * (self.t * 0.8).sin());
+        if !live {
+            self.lobs.clear();
+            return (Vec::new(), false);
+        }
+        let mut landed = Vec::new();
+        for l in self.lobs.iter_mut() {
+            l.left -= dt;
+            if l.left <= 0.0 {
+                landed.push(l.a);
+            }
+        }
+        self.lobs.retain(|l| l.left > 0.0);
+        self.next_lob -= dt;
+        if self.next_lob <= 0.0 {
+            self.lobbed += 1;
+            self.lobs.push(Lob { a: target, left: LOB_TIME, from: self.p });
+            if self.hp <= self.max / 2 {
+                // a second, wide to one side or the other
+                let wide = if self.lobbed % 2 == 0 { 1.0 } else { -1.0 };
+                self.lobs.push(Lob { a: target + wide * 1.1, left: LOB_TIME, from: self.p });
+            }
+            self.next_lob = LOB_EVERY / self.rage();
+            log::info!("mason lobs at {:.0} degrees", target.to_degrees());
+        }
+        self.next_build -= dt;
+        let build = self.next_build <= 0.0;
+        if build {
+            self.next_build = BUILD_EVERY / self.rage();
+        }
+        (landed, build)
+    }
+
+    /// He was hit. `Hurt::Shield` means he hurries: three bricks at once.
+    pub fn hit(&mut self) -> Hurt {
+        if self.hurt > 0.0 {
+            return Hurt::Shrugged;
+        }
+        self.hp = self.hp.saturating_sub(1);
+        self.hurt = HURT_TIME;
+        if self.hp == 0 {
+            return Hurt::Dead;
+        }
+        self.since_hurry += 1;
+        if self.since_hurry >= HURRY_EVERY {
+            self.since_hurry = 0;
+            return Hurt::Shield;
+        }
+        Hurt::Hurt
+    }
+}
+
 /// The Weathercock's arrow: half its length and its thickness; its rooster's radius.
 pub const ARROW_HALF: f32 = 9.5;
 pub const ARROW_TH: f32 = 0.8;
@@ -1017,6 +1166,29 @@ mod tests {
             }
         }
         assert_eq!(lurches, (BELL_HP - 1) / LURCH_EVERY);
+    }
+
+    #[test]
+    fn the_mason_lobs_and_builds() {
+        let c = V2::new(50.0, 28.0);
+        let mut m = Mason::new(c);
+        let (mut landed, mut builds) = (0, 0);
+        for _ in 0..(30.0 * 120.0) as usize {
+            let (l, b) = m.update(1.0 / 120.0, true, 1.0);
+            landed += l.len();
+            builds += b as usize;
+            assert!((m.p.x - c.x).abs() <= MASON_ROAM.x + 1e-3 && (m.p.y - c.y).abs() <= MASON_ROAM.y + 1e-3);
+        }
+        assert!(landed >= 6 && builds >= 9, "{landed} landed, {builds} builds");
+        // hurt, he lobs two at once
+        m.hp = 5;
+        m.lobs.clear();
+        while m.lobs.is_empty() {
+            m.update(1.0 / 120.0, true, 1.0);
+        }
+        assert_eq!(m.lobs.len(), 2);
+        let (at, high) = m.lobs[0].at(c, 26.0);
+        assert!((at - m.lobs[0].from).len() < 1.0 && high < 0.1);
     }
 
     #[test]

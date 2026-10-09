@@ -9,7 +9,7 @@
 //! pixel mode; only the drawing differs.
 
 use crate::game::{self, Game, Kind, Mode, BALL_R, BRICK_H, LEDGE, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF};
-use crate::boss::{self, Bell, Flight, MiniBoss, MiniKind, Rook, ShotKind, Storm, Weathercock};
+use crate::boss::{self, Bell, Flight, Mason, MiniBoss, MiniKind, Rook, ShotKind, Storm, Weathercock};
 use crate::roof::{self, RoofView, Seen};
 use crate::game::{Balcony, State};
 use crate::physics::{Path, V2};
@@ -417,6 +417,46 @@ fn draw_bell(cv: &mut Canvas, b: &Bell, centre: V2, ring: f32, time: f32) {
     cv.put(cc, cr, "Ω", if blink { bronze } else { Color::Rgb(255, 220, 130) }, None);
 }
 
+/// The apprentice on his scaffold, two rows tall (smallest size) or four, a brick
+/// at his side and then raised to throw. Columns `APPRENTICE_HEAD` are the lad, the
+/// rest plank and hod.
+const APPRENTICE_SMALL: [[&str; 2]; 2] = [["  ▬●╯      ", "═══╨╨══▬▬══"], ["   ●╮  ▬▬  ", "═══╨╨══▬▬══"]];
+const APPRENTICE_BIG: [[&str; 4]; 2] = [
+    ["   ▬╭─╮      ", "    │●│╯     ", "    ╰┬╯ ▬▬▬  ", "═════╨═▬▬▬═══"],
+    ["    ╭─╮      ", "    │●│╮     ", "    ╰┬╯ ▬▬▬  ", "═════╨═▬▬▬═══"],
+];
+
+/// The Mason from above: a ring with his house mark, the bricks he lobs (up in the
+/// air on their way) and the marks where they will land.
+fn draw_mason(cv: &mut Canvas, m: &Mason, centre: V2, ring: f32, time: f32) {
+    for lob in &m.lobs {
+        let urgent = 1.0 - lob.left / boss::LOB_TIME;
+        let fg = if (time * (10.0 + 30.0 * urgent)).sin() > 0.0 { Color::Rgb(255, 140, 80) } else { Color::Rgb(150, 75, 40) };
+        ring_mark(cv, centre, ring, lob.a, boss::LOB_SPAN, fg);
+    }
+    let blink = m.hurt > 0.0 && (m.hurt * 12.0) as i32 % 2 == 0;
+    let fg = if blink { Color::Rgb(255, 255, 255) } else { Color::Rgb(110, 140, 215) };
+    let (c0, r0, cols, rows) = pipe_ring(cv, m.p, boss::MASON_R, fg);
+    for r in r0 + 1..r0 + rows - 1 {
+        for c in c0 + 1..c0 + cols - 1 {
+            cv.put(c, r, " ", fg, Some(Color::Rgb(70, 52, 34)));
+        }
+    }
+    let (mc, mr) = cv.cell(m.p);
+    cv.put(mc, mr, "⌂", if blink { fg } else { Color::Rgb(230, 190, 120) }, None);
+    if m.laid < 0.3 {
+        let (tc, tr) = cv.cell(m.p + V2::new(boss::MASON_R + 0.8, 0.8));
+        cv.put(tc, tr, "◆", Color::Rgb(230, 230, 240), None);
+    }
+    for lob in &m.lobs {
+        let (at, high) = lob.at(centre, ring);
+        let (sc, sr) = cv.cell(at);
+        cv.put(sc, sr, "·", Color::Rgb(40, 30, 30), None);
+        let (bc, br) = cv.cell(at - V2::new(0.0, high * 3.5));
+        cv.put(bc, br, "▬", Color::Rgb(210, 85, 60), None);
+    }
+}
+
 /// The sea serpent's head, two rows tall (smallest size) or four, jaw shut and jaw
 /// open (while it aims). Columns `SERPENT_HEAD` are its head, the rest fins.
 const SERPENT_SMALL: [[&str; 2]; 2] = [[" ╭●─●╮ ", "≈╰▼ ▼╯≈"], [" ╭●─●╮ ", "≈╰┬▼┬╯≈"]];
@@ -456,6 +496,7 @@ fn draw_gargoyle(cv: &mut Canvas, g: &MiniBoss) {
     let up = match g.kind {
         MiniKind::Spider => (g.t * 5.0).sin() < 0.0,
         MiniKind::Serpent => !g.aiming(),
+        MiniKind::Apprentice => !g.aiming(),
         MiniKind::Jack => g.swung > 0.2,
         MiniKind::Gargoyle => g.flap() < 0.0,
     };
@@ -469,6 +510,8 @@ fn draw_gargoyle(cv: &mut Canvas, g: &MiniBoss) {
         (MiniKind::Jack, false) => JACK_SMALL[frame].to_vec(),
         (MiniKind::Serpent, true) => SERPENT_BIG[frame].to_vec(),
         (MiniKind::Serpent, false) => SERPENT_SMALL[frame].to_vec(),
+        (MiniKind::Apprentice, true) => APPRENTICE_BIG[frame].to_vec(),
+        (MiniKind::Apprentice, false) => APPRENTICE_SMALL[frame].to_vec(),
     };
     let width = sprite.iter().map(|l| l.chars().count()).max().unwrap_or(0) as i32;
     let head = match (g.kind, big) {
@@ -480,7 +523,19 @@ fn draw_gargoyle(cv: &mut Canvas, g: &MiniBoss) {
         (MiniKind::Jack, false) => 0..=4,
         (MiniKind::Serpent, true) => 1..=9,
         (MiniKind::Serpent, false) => 1..=5,
+        (MiniKind::Apprentice, true) => 3..=7,
+        (MiniKind::Apprentice, false) => 2..=4,
     };
+    if g.kind == MiniKind::Apprentice {
+        // the scaffold's ropes, up from the plank's ends to the lintel
+        let (_, lintel) = cv.cell(V2::new(g.p.x, game::FIELD_TOP));
+        for end in [-5.5, 5.5] {
+            let (rc, plank) = cv.cell(g.p + V2::new(end, 2.3) * boss::APPRENTICE_SCALE);
+            for r in lintel + 1..plank {
+                cv.put(rc, r, "│", Color::Rgb(190, 170, 125), None);
+            }
+        }
+    }
     if g.kind == MiniKind::Serpent {
         // its neck, up from the back of its head over the lintel
         let neck = g.neck();
@@ -504,6 +559,7 @@ fn draw_gargoyle(cv: &mut Canvas, g: &MiniBoss) {
         MiniKind::Spider => (Color::Rgb(120, 80, 140), Color::Rgb(85, 60, 95)),
         MiniKind::Jack => (Color::Rgb(150, 155, 175), BRASS),
         MiniKind::Serpent => (Color::Rgb(70, 175, 160), Color::Rgb(225, 85, 70)),
+        MiniKind::Apprentice => (Color::Rgb(110, 140, 215), Color::Rgb(170, 120, 70)),
         MiniKind::Gargoyle => (GARGOYLE_STONE, GARGOYLE_WING),
     };
     let blink = g.hurt > 0.0 && (g.hurt * 12.0) as i32 % 2 == 0;
@@ -517,6 +573,8 @@ fn draw_gargoyle(cv: &mut Canvas, g: &MiniBoss) {
             }
             let fg = if blink {
                 Color::Rgb(255, 255, 255)
+            } else if ch == '▬' {
+                Color::Rgb(210, 85, 60)
             } else if ch == '●' {
                 if g.aiming() { Color::Rgb(255, 220, 120) } else { Color::Rgb(255, 60, 40) }
             } else if head.contains(&(c as i32)) {
@@ -847,6 +905,9 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     if let (Some(b), Path::Circle { c, r }) = (&game.bell, game.arena.path) {
         draw_bell(&mut cv, b, c, r, game.time);
     }
+    if let (Some(m), Path::Circle { c, r }) = (&game.mason, game.arena.path) {
+        draw_mason(&mut cv, m, c, r, game.time);
+    }
 
     for part in &game.particles {
         let (c, r) = cv.cell(part.p);
@@ -863,6 +924,7 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
             ShotKind::Web => cv.put(c, r, "#", Color::Rgb(225, 225, 235), None),
             ShotKind::Chime => cv.put(c, r, "♪", Color::Rgb(255, 220, 120), None),
             ShotKind::Spray => cv.put(c, r, "∴", Color::Rgb(200, 240, 255), None),
+            ShotKind::Brick => cv.put(c, r, "▬", Color::Rgb(210, 85, 60), None),
             ShotKind::Fire => cv.put(c, r, "*", FIRE, None),
         }
     }
@@ -924,6 +986,12 @@ mod tests {
         }
         for frame in JACK_SMALL {
             assert!(frame.iter().all(|l| l.chars().count() == 7), "{frame:?}");
+        }
+        for frame in APPRENTICE_SMALL {
+            assert!(frame.iter().all(|l| l.chars().count() == 11), "{frame:?}");
+        }
+        for frame in APPRENTICE_BIG {
+            assert!(frame.iter().all(|l| l.chars().count() == 13), "{frame:?}");
         }
         for frame in SERPENT_SMALL {
             assert!(frame.iter().all(|l| l.chars().count() == 7), "{frame:?}");

@@ -4,7 +4,7 @@
 //! scales to any terminal; round things (ball, paddle) get analytic anti-aliasing.
 
 use crate::game::{self, Game, Kind, Mode, LEDGE, BALL_R, BRICK_H, BRICK_W, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_TH, WALL, WORLD_H};
-use crate::boss::{self, Bell, Flight, MiniBoss, MiniKind, Rook, ShotKind, Storm, Weathercock};
+use crate::boss::{self, Bell, Flight, Mason, MiniBoss, MiniKind, Rook, ShotKind, Storm, Weathercock};
 use crate::levels::{self, RoofBoss, Theme};
 use crate::map;
 use crate::roof::{self, RoofView, Seen, Tilt};
@@ -282,9 +282,14 @@ fn roof_top(game: &Game, roof: &RoofView, q: V2, ps: f32) -> Rgb {
         c = ghost_colour(c, k, l, ps, ps);
     }
     // still climbing: the roof's boss waits up there
-    let (waiting_vane, waiting_storm, waiting_rook, waiting_bell);
+    let (waiting_vane, waiting_storm, waiting_rook, waiting_bell, waiting_mason);
     let (mut vane, mut storm, mut rook, mut bell) = (game.vane.as_ref(), game.storm.as_ref(), game.rook.as_ref(), game.bell.as_ref());
+    let mut mason = game.mason.as_ref();
     match game.waiting_roof_boss() {
+        Some(RoofBoss::Mason) => {
+            waiting_mason = Mason::new(roof.centre);
+            mason = Some(&waiting_mason);
+        }
         Some(RoofBoss::Bell) => {
             waiting_bell = Bell::new(roof.centre);
             bell = Some(&waiting_bell);
@@ -316,6 +321,64 @@ fn roof_top(game: &Game, roof: &RoofView, q: V2, ps: f32) -> Rgb {
     }
     if let Some(b) = bell {
         c = great_bell(b, roof, q, ps, game.time, c);
+    }
+    if let Some(m) = mason {
+        c = the_mason(m, roof, q, ps, game.time, c);
+    }
+    c
+}
+
+/// A brick, `l` from its middle, `w` by `h`, turned by `spin`: red with pale mortar
+/// round its edge.
+fn small_brick(l: V2, w: f32, h: f32, spin: f32, ps: f32) -> Option<Rgb> {
+    let l = l.rotate(-spin);
+    if l.x.abs() > w / 2.0 || l.y.abs() > h / 2.0 {
+        return None;
+    }
+    let edge = l.x.abs() > w / 2.0 - ps * 0.5 || l.y.abs() > h / 2.0 - ps * 0.5;
+    Some(if edge { [215.0, 190.0, 160.0] } else { mix([210.0, 85.0, 60.0], [140.0, 50.0, 40.0], l.y / h + 0.5) })
+}
+
+/// The Mason from above, over roof point `q` on top of `c`: the bricks he lobs,
+/// arcing up over the roof with their shadows below and the marks where they will
+/// land; and the Mason, a broad-brimmed hat over blue shoulders, his trowel
+/// flashing as he lays a brick.
+fn the_mason(m: &Mason, roof: &RoofView, q: V2, ps: f32, time: f32, mut c: Rgb) -> Rgb {
+    for lob in &m.lobs {
+        c = ring_mark(roof, q, lob.a, boss::LOB_SPAN, lob.left, boss::LOB_TIME, time, [255.0, 140.0, 80.0], c);
+    }
+    let l = q - m.p;
+    let (ax, d) = (l.x.abs(), l.len());
+    let mut fig = None;
+    if ax < 3.2 && l.y.abs() < 1.4 && (l.x / 3.2).powi(2) + (l.y / 1.4).powi(2) < 1.0 {
+        fig = Some(mix([110.0, 140.0, 225.0], [50.0, 70.0, 140.0], l.y / 2.8 + 0.5));
+    }
+    if (l - V2::new(3.3, 0.9)).len() < 0.75 {
+        fig = Some(if m.laid < 0.3 { [255.0, 255.0, 255.0] } else { [190.0, 195.0, 205.0] });
+    }
+    if d < 2.3 {
+        // a straw hat: lit crown, red band, brim
+        let lit = 0.5 - l.dot(V2::new(-0.6, -0.8)) / 2.3 * 0.5;
+        fig = Some(if d < 1.3 {
+            mix([240.0, 205.0, 135.0], [175.0, 135.0, 80.0], lit)
+        } else if d < 1.6 {
+            [150.0, 45.0, 40.0]
+        } else {
+            mix([215.0, 175.0, 105.0], [140.0, 105.0, 60.0], lit + (d - 1.6) / 1.4)
+        });
+    }
+    if let Some(f) = fig {
+        c = if m.hurt > 0.0 && (m.hurt * 12.0) as i32 % 2 == 0 { mix(f, [255.0, 255.0, 255.0], 0.75) } else { f };
+    }
+    for lob in &m.lobs {
+        let (at, high) = lob.at(roof.centre, roof.ring);
+        // its shadow on the roof, then the brick itself up in the air
+        if (q - at).len() < 1.4 {
+            c = scale(c, 0.6);
+        }
+        if let Some(b) = small_brick(q - at + V2::new(0.0, high * 3.5), 3.0 + high * 1.5, 1.5 + high * 0.75, time * 7.0, ps) {
+            c = b;
+        }
     }
     c
 }
@@ -583,6 +646,40 @@ fn spider(g: &MiniBoss, l: V2) -> Option<Rgb> {
     c
 }
 
+/// The Mason's apprentice on his scaffold, in his own units (`l` from the middle, y
+/// down): the plank, a hod of bricks at one end, the lad in a blue cap and apron, a
+/// brick raised to throw while he aims.
+fn apprentice(g: &MiniBoss, l: V2, ps: f32) -> Option<Rgb> {
+    let seg = |a: V2, b: V2, r: f32| (l - physics::closest_on_segment(l, a, b)).len() < r;
+    let c = if l.y > 2.3 && l.y < 3.3 && l.x.abs() < 6.0 {
+        let grain = ((l.x * 1.7).sin() * 0.5 + 0.5) * 0.15;
+        Some(mix([170.0, 120.0, 70.0], [100.0, 68.0, 40.0], (l.y - 2.3) + grain))
+    } else if l.x > 2.0 && l.x < 4.8 && l.y > 0.7 && l.y <= 2.3 {
+        // the hod: two courses of bricks
+        let mortar = (l.y - 0.7).rem_euclid(0.8) < ps || (l.x - 2.0 + if l.y < 1.5 { 0.7 } else { 0.0 }).rem_euclid(1.4) < ps;
+        Some(if mortar { [200.0, 180.0, 150.0] } else { [190.0, 75.0, 55.0] })
+    } else if (l - V2::new(-1.5, -2.3)).len() < 0.85 {
+        let eye = (l - V2::new(-1.2, -2.3)).len() < 0.2;
+        Some(if eye { [40.0, 30.0, 30.0] } else { [235.0, 185.0, 145.0] })
+    } else if l.y < -2.5 && l.y > -3.4 && (l.x + 1.5).abs() < 1.0 + if l.y > -2.8 { 0.4 } else { 0.0 } {
+        Some([70.0, 100.0, 175.0])
+    } else if (l.x + 1.5).abs() < 0.95 && l.y > -1.5 && l.y < 0.7 {
+        Some(if (l.x + 1.5).abs() < 0.6 && l.y > -0.9 { [215.0, 205.0, 175.0] } else { [70.0, 100.0, 175.0] })
+    } else if seg(V2::new(-2.0, 0.7), V2::new(-2.1, 2.3), 0.3) || seg(V2::new(-1.0, 0.7), V2::new(-0.9, 2.3), 0.3) {
+        Some([60.0, 60.0, 90.0])
+    } else if g.aiming() && (seg(V2::new(-0.7, -1.1), V2::new(0.2, -2.6), 0.28) || (l - V2::new(0.4, -3.1)).len() < 0.6) {
+        Some(if (l - V2::new(0.4, -3.1)).len() < 0.6 { [190.0, 75.0, 55.0] } else { [235.0, 185.0, 145.0] })
+    } else if !g.aiming() && seg(V2::new(-0.7, -1.1), V2::new(0.3, 0.3), 0.28) {
+        Some([235.0, 185.0, 145.0])
+    } else {
+        None
+    };
+    if g.hurt > 0.0 && (g.hurt * 12.0) as i32 % 2 == 0 {
+        return c.map(|c| mix(c, [255.0, 255.0, 255.0], 0.75));
+    }
+    c
+}
+
 /// The sea serpent's head, in its own units (`l` from its middle, y down): a long
 /// green-teal head facing down, a paler snout and jaw (open, with fangs, while it
 /// aims), yellow eyes and red fins swept back either side.
@@ -732,6 +829,10 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
             // its thread, up to the lintel
             c = mix(c, [200.0, 200.0, 215.0], 0.6);
         }
+        if g.kind == MiniKind::Apprentice && p.y > FIELD_TOP && l.y < 2.3 * boss::APPRENTICE_SCALE && ((l.x.abs() - 5.5 * boss::APPRENTICE_SCALE).abs() < ps * 0.5 + 0.12) {
+            // the scaffold's ropes, up to the lintel
+            c = mix(c, [190.0, 170.0, 125.0], 0.85);
+        }
         if g.kind == MiniKind::Serpent && p.y > FIELD_TOP {
             // its neck, up over the lintel: scaled, a pale belly down one side
             let neck = g.neck();
@@ -757,6 +858,7 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
                 MiniKind::Spider => spider(g, l),
                 MiniKind::Jack => jack(g, l * (1.0 / boss::JACK_SCALE)),
                 MiniKind::Serpent => serpent(g, l * (1.0 / boss::SERPENT_SCALE)),
+                MiniKind::Apprentice => apprentice(g, l * (1.0 / boss::APPRENTICE_SCALE), ps),
             };
             if let Some(gc) = drawn {
                 c = gc;
@@ -765,7 +867,8 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
     }
     for shot in &game.shots {
         let d = (p - shot.p).len();
-        if d < boss::SHOT_R + ps {
+        let reach = if shot.kind == ShotKind::Brick { boss::SHOT_R * 1.4 } else { boss::SHOT_R };
+        if d < reach + ps {
             let blob = match shot.kind {
                 // a tangle of silk: strands across a pale glob
                 ShotKind::Web => {
@@ -777,6 +880,11 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
                 ShotKind::Chime => {
                     if d > boss::SHOT_R * 0.45 { mix([255.0, 250.0, 210.0], [240.0, 180.0, 60.0], d / boss::SHOT_R) } else { mix(c, [255.0, 230.0, 140.0], 0.3) }
                 }
+                // a thrown brick, tumbling
+                ShotKind::Brick => match small_brick(p - shot.p, 2.4, 1.2, game.time * 9.0, ps) {
+                    Some(b) => b,
+                    None => continue,
+                },
                 // freezing spray: a pale ball of droplets
                 ShotKind::Spray => {
                     let l = p - shot.p;

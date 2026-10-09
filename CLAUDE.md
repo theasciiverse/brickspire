@@ -130,7 +130,7 @@ terminal cells being taller than they are wide, so that part is ours to solve.
   | 2 | The Ivy Tower | mossy stone in a forest, dusk | vine bricks that slide along their row | a giant spider on its web | the Rook's Nest (a giant crow in a nest with a twig wall the ball must break; it hops round and swoops across the roof) |
   | 3 | The Bell Tower | warm sandstone, sunset | clockwork bricks that tick back in after a while | the clock's jack, the figure that strikes the bell on the hour | the Great Bell (swings in the middle; each ring sends a slow shock ring outward that stuns the paddle unless dodged) |
   | 4 | The Sea Tower | a lighthouse on a cliff, storm clouds, waves below | ice bricks the ball skids off at a shallower angle | a sea serpent rising beside the balcony | the Weathercock |
-  | 5 | The Brickspire | above the clouds, starry sky | all of them | not decided | the Mason, who built the tower, rebuilding the field as you break it |
+  | 5 | The Brickspire | above the clouds, starry sky | all of them | the Mason's apprentice (provisional, to confirm) | the Mason, who built the tower, rebuilding the field as you break it |
 
 - Boss design rule (learned 2026-10-09): keep the ball readable. A boss's threat
   goes at the paddle (marks, stuns, things to dodge), not at the ball's flight. The
@@ -169,7 +169,9 @@ state snapshot about every 500 ms (paddle position and path, balls, active power
 ## Open questions
 
 - [x] How many towers, and a theme per tower? Five, themed (see Structure).
-- [ ] Tower 5's mini-boss.
+- [ ] Tower 5's mini-boss. Built provisionally (overnight, 2026-10-09) as the Mason's
+      apprentice on a scaffold, throwing bricks that chip the paddle short; David to
+      confirm or pick another.
 - [ ] Two-player co-op or versus over iroh? Doh It Again had both.
 - [ ] A level editor? Doh It Again had one.
 - [ ] Offer a "paddle-centric" view on the roof (the arena turns and the paddle stays at the
@@ -187,7 +189,8 @@ cargo run --release -- --floor 6            # the Storm Cloud's roof (first towe
 cargo run --release -- --floor 7            # the Ivy Tower (floors 7 to 12: spider on 11, rook on 12)
 cargo run --release -- --floor 13           # the Bell Tower (floors 13 to 18: the Jack on 17, the Great Bell on 18)
 cargo run --release -- --floor 19           # the Sea Tower (floors 19 to 24: the serpent on 23, the Weathercock on 24)
-cargo run --release -- --floor 6 --roof weathercock   # any roof boss on any roof: storm, rook, bell, weathercock
+cargo run --release -- --floor 25           # the Brickspire (floors 25 to 30: the apprentice on 29, the Mason on 30)
+cargo run --release -- --floor 6 --roof weathercock   # any roof boss on any roof: storm, rook, bell, weathercock, mason
 cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
 cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5] [--map 4]   # headless frame (--map T: the map after this tower, T s in)
@@ -208,9 +211,11 @@ cargo test --release
 - `boss.rs`: the mini-bosses, one shape of fight in three kinds (the Gargoyle spits
   fire and lays stone, the Spider spits web and spins web bricks, the Jack strikes
   volleys of chimes and winds clockwork, the sea serpent sways on its neck, spits
-  freezing spray and freezes ice), the Storm Cloud (drifting, marking the
+  freezing spray and freezes ice, the apprentice swings on his scaffold and throws
+  bricks), the Storm Cloud (drifting, marking the
   ring, lightning, rain), the Rook (twig nest, hopping, crouch and swoop, patching),
-  the Great Bell (swinging, tolling rings of sound loud along its swing, lurching)
+  the Great Bell (swinging, tolling rings of sound loud along its swing, lurching),
+  the Mason (working in his fort of bricks, putting them back, lobbing bricks)
   and the Weathercock (turning, gusts, spin-ups, hits).
 - `roof.rs`: the camera tilting up onto the roof, shared by both renderers (what a
   screen point sees: roof top, parapet, tower side or beyond), and the roof's contents.
@@ -227,6 +232,24 @@ cargo test --release
 - `input.rs`: keys (exact or timing), mouse chase and click, gamepad (stick aims on the roof).
 
 ## Status
+
+The Brickspire (2026-10-09, overnight): above the clouds, a full night sky, violet
+stone, a sea of cloud far below the roof. Its floors mix every brick so far (vine,
+clockwork, ice, steel, gilt). The Apprentice's Scaffold (provisional mini-boss,
+see open questions): the Mason's apprentice (12 hits) stands on a plank slung from
+the lintel on two ropes, a hod of bricks beside him, swinging to and fro; he
+raises a brick and throws it at the paddle, which chips it (60% of its length for
+3 s); every third hit he lays a row of red bricks. The Mason's Roof, the final
+boss: the Mason (20 hits, a straw hat over blue shoulders seen from above) works
+inside a little fort of bricks in the middle of the roof, putting back a brick
+where his roof had one every 3 s (sooner when hurt, three at once every fourth
+hit). He lobs bricks at the paddle: the ring is marked where one will land 1.3 s
+later, and a paddle still there is stunned; below half health he lobs two at a
+time, the second wide to one side. Beating him is worth 10000. The autopilot
+takes about 155 s and loses two lives, the hardest roof, as it should be.
+
+With all five towers built, the map's "every tower climbed" after the last roof is
+now true, and the climb starts again from the Old Keep.
 
 The Sea Tower (2026-10-09, overnight): a lighthouse in a storm, grey-white stone,
 storm clouds rolling and rain streaking the sky. Ice bricks (pale, glassy, a glint

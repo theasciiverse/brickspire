@@ -3,7 +3,7 @@
 //! A fixed step of `STEP` seconds. The paddle moves first, then each ball is swept
 //! along its motion, bouncing off whatever it touches first, until the step is used up.
 
-use crate::boss::{self, Bell, Flight, Hurt, MiniBoss, MiniKind, Rook, Shot, ShotKind, Storm, Weathercock};
+use crate::boss::{self, Bell, Flight, Hurt, Mason, MiniBoss, MiniKind, Rook, Shot, ShotKind, Storm, Weathercock};
 use crate::levels::{self, Floor, FloorKind, RoofBoss};
 use crate::map;
 use crate::physics::{self, Hit, Path, V2};
@@ -73,6 +73,10 @@ const ICE_GRIP: f32 = 2.5;
 /// Off ice, the ball keeps this share of its speed away from the surface (it skids
 /// off at a shallower angle).
 const ICE_SKID: f32 = 0.55;
+/// Seconds the paddle stays chipped by a thrown brick, and how much of its length
+/// it keeps meanwhile.
+const CHIPPED: f32 = 3.0;
+const CHIP_SHARE: f32 = 0.6;
 /// How far the camera pulls back on a boss floor (pixel graphics).
 const BOSS_ZOOM: f32 = 0.86;
 
@@ -283,6 +287,7 @@ pub struct Game {
     pub storm: Option<Storm>,
     pub rook: Option<Rook>,
     pub bell: Option<Bell>,
+    pub mason: Option<Mason>,
     pub vane: Option<Weathercock>,
     /// A roof boss forced for every roof (`--roof`), instead of each roof's own.
     pub roof_boss: Option<RoofBoss>,
@@ -293,6 +298,8 @@ pub struct Game {
     /// over by the serpent's spray (sliding).
     pub webbed: f32,
     pub iced: f32,
+    /// How long the paddle has left chipped short by the apprentice's bricks.
+    pub chipped: f32,
     /// A paddle path forced for every floor (`--path`), instead of each floor's own.
     forced: Option<Mode>,
     seed: u32,
@@ -315,6 +322,8 @@ enum Thing {
     Crow,
     /// The Great Bell's mouth.
     Bell,
+    /// The Mason.
+    Mason,
 }
 
 pub fn brick_rgb(kind: Kind) -> [u8; 3] {
@@ -409,6 +418,7 @@ impl Game {
             storm: None,
             rook: None,
             bell: None,
+            mason: None,
             vane: None,
             roof_boss: None,
             boss_floor: false,
@@ -416,6 +426,7 @@ impl Game {
             stun: 0.0,
             webbed: 0.0,
             iced: 0.0,
+            chipped: 0.0,
             forced,
             seed: 0x9e37_79b9,
         };
@@ -450,6 +461,7 @@ impl Game {
         self.storm = roof.and_then(|(who, c)| (who == RoofBoss::Storm).then(|| Storm::new(c)));
         self.rook = roof.and_then(|(who, c)| (who == RoofBoss::Rook).then(|| Rook::new(c)));
         self.bell = roof.and_then(|(who, c)| (who == RoofBoss::Bell).then(|| Bell::new(c)));
+        self.mason = roof.and_then(|(who, c)| (who == RoofBoss::Mason).then(|| Mason::new(c)));
         self.vane = roof.and_then(|(who, c)| (who == RoofBoss::Weathercock).then(|| Weathercock::new(c)));
         let (cols, rows, cells) = parse(def);
         (self.cols, self.rows) = (cols, rows);
@@ -481,6 +493,7 @@ impl Game {
         self.stun = 0.0;
         self.webbed = 0.0;
         self.iced = 0.0;
+        self.chipped = 0.0;
         self.speed = self.speed_start();
         if self.arena.path.wraps() {
             self.paddle.s = 0.0;
@@ -493,7 +506,8 @@ impl Game {
 
     /// Half the paddle's length: longer on the roof.
     pub fn paddle_half(&self) -> f32 {
-        if self.arena.mode == Mode::Circle { ROOF_PADDLE_HALF } else { PADDLE_HALF }
+        let half = if self.arena.mode == Mode::Circle { ROOF_PADDLE_HALF } else { PADDLE_HALF };
+        if self.chipped > 0.0 { half * CHIP_SHARE } else { half }
     }
 
     fn paddle_speed(&self) -> f32 {
@@ -713,6 +727,7 @@ impl Game {
         self.stun = (self.stun - STEP).max(0.0);
         self.webbed = (self.webbed - STEP).max(0.0);
         self.iced = (self.iced - STEP).max(0.0);
+        self.chipped = (self.chipped - STEP).max(0.0);
         self.move_paddle(steer);
         self.update_boss();
         if let State::Serve { wait } = self.state {
@@ -760,7 +775,7 @@ impl Game {
 
     /// Is a boss still alive on this floor?
     pub fn boss_left(&self) -> bool {
-        self.boss.is_some() || self.vane.is_some() || self.storm.is_some() || self.rook.is_some() || self.bell.is_some()
+        self.boss.is_some() || self.vane.is_some() || self.storm.is_some() || self.rook.is_some() || self.bell.is_some() || self.mason.is_some()
     }
 
     fn launch(&mut self) {
@@ -884,6 +899,10 @@ impl Game {
                     self.balls[i].v = ball.v.reflect(hit.n);
                     self.hit_bell();
                 }
+                Thing::Mason => {
+                    self.balls[i].v = ball.v.reflect(hit.n);
+                    self.hit_mason();
+                }
             }
             self.balls[i].v = self.tidy(self.balls[i].v);
         }
@@ -972,6 +991,9 @@ impl Game {
         if let Some(b) = &self.bell {
             take(physics::sweep_capsule(p, d, b.p, b.p, boss::BELL_R + BALL_R), Thing::Bell);
         }
+        if let Some(m) = &self.mason {
+            take(physics::sweep_capsule(p, d, m.p, m.p, boss::MASON_R + BALL_R), Thing::Mason);
+        }
         let (a, b, n) = self.paddle_segment();
         let h = physics::sweep_capsule(p, d, a, b, PADDLE_TH + BALL_R).filter(|h| h.n.dot(n) > -0.3);
         take(h, Thing::Paddle);
@@ -1051,6 +1073,7 @@ impl Game {
         self.update_storm();
         self.update_rook();
         self.update_bell();
+        self.update_mason();
         let Some(mut g) = self.boss.take() else { return };
         let live = self.state == State::Play;
         let target = self.arena.path.point(self.paddle.s);
@@ -1086,6 +1109,11 @@ impl Game {
                 info!("paddle stunned by a chime");
                 self.stun = STUN;
                 self.burst(at, V2::new(2.0, 1.0), 10, [255, 225, 120], 22.0);
+            }
+            Some((at, ShotKind::Brick)) => {
+                info!("paddle chipped");
+                self.chipped = CHIPPED;
+                self.burst(at, V2::new(2.0, 1.0), 12, [200, 80, 60], 20.0);
             }
             Some((at, ShotKind::Spray)) => {
                 info!("paddle iced over");
@@ -1249,6 +1277,91 @@ impl Game {
         }
     }
 
+    /// The Mason works and lobs; a brick landing where the paddle is stuns it. When
+    /// it's time, he puts a brick back. A ball he walked into is pushed back out.
+    fn update_mason(&mut self) {
+        let Some(mut m) = self.mason.take() else { return };
+        let Path::Circle { c, r } = self.arena.path else {
+            self.mason = Some(m);
+            return;
+        };
+        let paddle = self.arena.path.point(self.paddle.s);
+        let at_paddle = (paddle - c).y.atan2((paddle - c).x);
+        let (landed, build) = m.update(STEP, self.state == State::Play, at_paddle);
+        for b in self.balls.iter_mut() {
+            let off = b.p - m.p;
+            let reach = boss::MASON_R + BALL_R;
+            if off.len() < reach && off.len() > 0.0 {
+                let n = off.norm();
+                b.p = m.p + n * (reach + 1e-3);
+                if b.v.dot(n) < 0.0 {
+                    b.v = b.v.reflect(n);
+                }
+            }
+        }
+        let home = m.p;
+        self.mason = Some(m);
+        for a in landed {
+            let at = c + V2::new(a.cos(), a.sin()) * r;
+            self.burst(at, V2::new(2.0, 2.0), 12, [200, 80, 60], 20.0);
+            let off = (at_paddle - a + PI).rem_euclid(2.0 * PI) - PI;
+            if off.abs() < boss::LOB_SPAN + self.paddle_half() / r {
+                info!("paddle struck by a lobbed brick");
+                self.stun = STUN;
+            }
+        }
+        if build {
+            self.build(home, 1);
+        }
+    }
+
+    /// The Mason puts up to `n` bricks back where his roof had them, nearest him
+    /// first (not where a ball is).
+    fn build(&mut self, at: V2, n: usize) {
+        let (_, _, cells) = parse(self.floor_def(self.floor));
+        let mut free: Vec<(f32, usize)> = (0..self.bricks.len().min(cells.len()))
+            .filter(|&i| self.bricks[i].is_none() && cells[i].is_some())
+            .filter_map(|i| {
+                let (min, max) = self.brick_box(i);
+                let in_the_way = self.balls.iter().any(|b| physics::box_overlap(b.p, min, max, BALL_R + 1.0).is_some());
+                (!in_the_way).then(|| (((min + max) * 0.5 - at).len(), i))
+            })
+            .collect();
+        free.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for &(_, i) in free.iter().take(n) {
+            let kind = cells[i].unwrap();
+            self.bricks[i] = Some(Brick { flash: 0.15, ..Brick::new(kind, start_hp(kind, self.floor)) });
+        }
+        if !free.is_empty() {
+            info!("the mason puts back {} bricks", free.len().min(n));
+        }
+    }
+
+    fn hit_mason(&mut self) {
+        let Some(m) = self.mason.as_mut() else { return };
+        let hurt = m.hit();
+        let (at, hp) = (m.p, m.hp);
+        match hurt {
+            Hurt::Shrugged => return,
+            Hurt::Hurt | Hurt::Shield => {
+                info!("mason hit: {hp} left");
+                self.score += 200;
+                self.burst(at, V2::new(3.0, 3.0), 8, [90, 120, 200], 16.0);
+                if hurt == Hurt::Shield {
+                    self.build(at, 3);
+                }
+            }
+            Hurt::Dead => {
+                info!("the mason beaten");
+                self.score += 10000;
+                self.mason = None;
+                self.burst(at, V2::new(8.0, 8.0), 60, [90, 120, 200], 30.0);
+                self.burst(at, V2::new(20.0, 20.0), 50, [240, 185, 45], 28.0);
+            }
+        }
+        self.speed = (self.speed + SPEED_PER_HIT).min(self.speed_max());
+    }
+
     fn hit_bell(&mut self) {
         let Some(b) = self.bell.as_mut() else { return };
         let hurt = b.hit();
@@ -1391,6 +1504,7 @@ impl Game {
             MiniKind::Spider => [70, 40, 80],
             MiniKind::Jack => [60, 62, 74],
             MiniKind::Serpent => [40, 110, 105],
+            MiniKind::Apprentice => [140, 100, 60],
             MiniKind::Gargoyle => [150, 140, 160],
         };
         match hurt {
@@ -1413,6 +1527,7 @@ impl Game {
                     MiniKind::Spider => [215, 215, 225],
                     MiniKind::Jack => [255, 210, 110],
                     MiniKind::Serpent => [190, 235, 255],
+                    MiniKind::Apprentice => [200, 80, 60],
                     MiniKind::Gargoyle => [255, 120, 40],
                 };
                 self.burst(at, half, 20, spark, 24.0);
@@ -1428,6 +1543,7 @@ impl Game {
             MiniKind::Spider => Kind::Web,
             MiniKind::Jack => Kind::Clock,
             MiniKind::Serpent => Kind::Ice,
+            MiniKind::Apprentice => Kind::Plain(4),
             MiniKind::Gargoyle => Kind::Stone,
         };
         let y = at.y + half.y + 2.5 - self.origin.y;
@@ -1493,6 +1609,7 @@ impl Game {
         self.storm = None;
         self.rook = None;
         self.bell = None;
+        self.mason = None;
         self.ghosts.clear();
         if self.arena.mode != Mode::Circle {
             self.clear_floor(CLEAR_HOLD);

@@ -31,6 +31,7 @@ pub enum RoofBoss {
     Rook,
     Bell,
     Weathercock,
+    Mason,
 }
 
 /// Who waits on a balcony.
@@ -40,6 +41,7 @@ pub enum MiniKind {
     Spider,
     Jack,
     Serpent,
+    Apprentice,
 }
 
 /// A tower's look: sky, stone, the ground far below.
@@ -122,6 +124,20 @@ pub const TOWERS: &[Tower] = &[
         },
         mini: MiniKind::Serpent,
         floors: SEA_TOWER,
+    },
+    Tower {
+        name: "The Brickspire",
+        theme: Theme {
+            sky: [[3, 3, 16], [34, 26, 74]],
+            stars: 1.0,
+            wall: [54, 48, 80],
+            mortar: [30, 26, 48],
+            fields: [[150, 150, 172], [205, 205, 220]],
+            ivy: false,
+            rain: false,
+        },
+        mini: MiniKind::Apprentice,
+        floors: BRICKSPIRE,
     },
 ];
 
@@ -481,6 +497,87 @@ pub const SEA_TOWER: &[Floor] = &[
             ".......",
         ],
         kind: FloorKind::Roof(RoofBoss::Weathercock),
+    },
+];
+
+/// The last tower, above the clouds: every kind of brick, the Mason's apprentice on
+/// a scaffold, and the Mason himself on the roof inside a little fort of bricks he
+/// keeps rebuilding.
+pub const BRICKSPIRE: &[Floor] = &[
+    Floor {
+        name: "Above the Clouds",
+        rows: &["wwwwwwwwwwwww", "vvvv.....vvvv", "kkk.iiiii.kkk", ".............", "SSS.mmmmm.SSS", "ccccccccccccc"],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "The Mason's Marks",
+        rows: &[
+            "S.v.k.i.k.v.S",
+            "mmmmmmmmmmmmm",
+            ".iii.....iii.",
+            "..kkk...kkk..",
+            "G...........G",
+            "yyyyyyyyyyyyy",
+        ],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "Starlight",
+        rows: &[
+            "......y......",
+            ".....yiy.....",
+            "...vvyiyvv...",
+            "yyyyiiwiiyyyy",
+            "...kkyiykk...",
+            ".....yiy.....",
+            "......y......",
+            "SS.........SS",
+        ],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "The Last Stair",
+        rows: &[
+            "k.v.i.k.v.i.k",
+            ".............",
+            "SSSSSS.SSSSSS",
+            "rrrrrrrrrrrrr",
+            "iiiii...iiiii",
+            "bbbbbbbbbbbbb",
+        ],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "The Apprentice's Scaffold",
+        // the top rows stay open: the scaffold swings there, and bricks are laid in row 4
+        rows: &[
+            ".............",
+            ".............",
+            ".............",
+            ".............",
+            "S...........S",
+            "vvv..kkk..iii",
+            "..m.......m..",
+        ],
+        kind: FloorKind::Balcony,
+    },
+    Floor {
+        name: "The Mason's Roof",
+        // a little fort round the middle, where the Mason works
+        rows: &[
+            ".......",
+            "..www..",
+            ".......",
+            ".SyyyS.",
+            ".y...y.",
+            ".y...y.",
+            ".y...y.",
+            ".SyyyS.",
+            ".......",
+            "..www..",
+            ".......",
+        ],
+        kind: FloorKind::Roof(RoofBoss::Mason),
     },
 ];
 
