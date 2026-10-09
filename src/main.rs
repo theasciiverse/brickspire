@@ -311,11 +311,16 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, glyphs: bool, area: 
     let lives: String = if game.lives <= 3 { "▬ ".repeat(game.lives as usize) } else { format!("▬×{} ", game.lives) };
     let (t, first) = levels::tower_of(game.floor);
     let tower = &levels::TOWERS[t];
+    // narrower than the catalog's 100 columns, a boss fight drops the title and the
+    // tower's name, so the boss's health still fits
+    let narrow = area.width < 100 && game.boss_left();
     let top = Line::from(vec![
-        Span::styled(" BRICKSPIRE ", bar.add_modifier(Modifier::BOLD)),
+        Span::styled(if narrow { "" } else { " BRICKSPIRE " }, bar.add_modifier(Modifier::BOLD)),
         // (during a boss fight the boss's name and health take the floor name's room)
         Span::styled(
-            if game.boss_left() {
+            if narrow {
+                format!(" FLOOR {} ", game.floor + 1 - first)
+            } else if game.boss_left() {
                 format!(" {} · FLOOR {} ", tower.name.to_uppercase(), game.floor + 1 - first)
             } else {
                 format!(" {} · FLOOR {} {} ", tower.name.to_uppercase(), game.floor + 1 - first, game.floor_name)
