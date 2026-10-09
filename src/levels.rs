@@ -5,7 +5,7 @@
 //! and doesn't count towards clearing the floor); `s` stone (what the Gargoyle lays).
 //!
 //! A boss floor is cleared by beating its boss, not its bricks: the balcony puts the
-//! paddle on an arc against the Gargoyle, the roof on a full ring round the Weathercock.
+//! paddle on an arc against the Gargoyle, the roof on a full ring round the roof's boss.
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum FloorKind {
@@ -13,8 +13,15 @@ pub enum FloorKind {
     Plain,
     /// The mini-boss balcony: paddle on an arc, beat the Gargoyle.
     Balcony,
-    /// The roof: looking straight down, paddle right round a ring, beat the Weathercock.
-    Roof,
+    /// The roof: looking straight down, paddle right round a ring, beat its boss.
+    Roof(RoofBoss),
+}
+
+/// Who waits on a roof.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RoofBoss {
+    Storm,
+    Weathercock,
 }
 
 pub struct Floor {
@@ -24,7 +31,7 @@ pub struct Floor {
 }
 
 /// The first tower: flat floors 13 bricks across, the balcony partway up, the roof
-/// on top (a few groups of bricks round the middle, where the Weathercock roams).
+/// on top (a few groups of bricks round the middle, where the Storm Cloud drifts).
 pub const FLOORS: &[Floor] = &[
     Floor {
         name: "Ground Floor",
@@ -87,8 +94,8 @@ pub const FLOORS: &[Floor] = &[
         kind: FloorKind::Balcony,
     },
     Floor {
-        name: "The Weathercock's Roof",
-        // a few small groups, leaving the roof open for the Weathercock to roam
+        name: "The Storm Cloud's Roof",
+        // a few small groups, leaving the roof open under the cloud
         rows: &[
             ".......",
             "..cyc..",
@@ -102,7 +109,7 @@ pub const FLOORS: &[Floor] = &[
             "..cyc..",
             ".......",
         ],
-        kind: FloorKind::Roof,
+        kind: FloorKind::Roof(RoofBoss::Storm),
     },
 ];
 

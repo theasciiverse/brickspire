@@ -9,7 +9,7 @@
 //! pixel mode; only the drawing differs.
 
 use crate::game::{self, Game, Kind, Mode, BALL_R, BRICK_H, LEDGE, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF};
-use crate::boss::{self, Gargoyle, Weathercock};
+use crate::boss::{self, Gargoyle, Storm, Weathercock};
 use crate::roof::{self, RoofView, Seen};
 use crate::game::{Balcony, State};
 use crate::physics::{Path, V2};
@@ -101,6 +101,14 @@ impl Canvas<'_> {
         cell.set_symbol(sym).set_fg(fg);
         if let Some(bg) = bg {
             cell.set_bg(bg);
+        }
+    }
+
+    /// Change a cell's background, keeping what is drawn on it.
+    fn tint(&mut self, c: i32, r: i32, bg: Color) {
+        let a = self.view.area;
+        if c >= 0 && r >= 0 && c < a.width as i32 && r < a.height as i32 {
+            self.buf[(a.x + c as u16, a.y + r as u16)].set_bg(bg);
         }
     }
 
@@ -247,6 +255,48 @@ fn draw_weathercock(cv: &mut Canvas, w: &Weathercock) {
     let (c0, r0, cols, _) = pipe_ring(cv, w.centre + shake, boss::ROOSTER_R, fg);
     if cols >= 3 {
         cv.put(c0 + cols / 2, r0, "▲", if blink { fg } else { Color::Rgb(225, 50, 40) }, None);
+    }
+}
+
+/// The Storm Cloud: its puffs a dark background you can see the roof through, its
+/// core a glowing pipe ring (white after a hit), the mark it puts on the ring before
+/// a bolt (pulsing faster as the strike nears), then the bolt itself.
+fn draw_storm(cv: &mut Canvas, s: &Storm, centre: V2, ring: f32, time: f32) {
+    let puffs = s.puffs();
+    let (lo, hi) = (cv.cell(s.centre - V2::new(1.0, 1.0) * boss::CLOUD_R), cv.cell(s.centre + V2::new(1.0, 1.0) * boss::CLOUD_R));
+    let flicker = s.charging.is_some() && (time * 9.0).sin() > 0.6;
+    for r in lo.1..=hi.1 {
+        for c in lo.0..=hi.0 {
+            let p = cv.centre(c, r);
+            if puffs.iter().any(|&(q, rad)| (p - q).len() < rad) {
+                cv.tint(c, r, if flicker { Color::Rgb(78, 76, 70) } else { Color::Rgb(52, 54, 70) });
+            }
+        }
+    }
+    if let Some((a, left)) = s.charging {
+        let pulse = (time * (10.0 + 30.0 * (1.0 - left / boss::BOLT_WARN))).sin() > 0.0;
+        let fg = if pulse { Color::Rgb(255, 225, 90) } else { Color::Rgb(150, 120, 40) };
+        let n = 24;
+        let span = boss::BOLT_SPAN;
+        let cells = walk(cv, (0..=n).map(|i| {
+            let t = a - span + 2.0 * span * i as f32 / n as f32;
+            centre + V2::new(t.cos(), t.sin()) * ring
+        }));
+        for (c, r, sym) in strokes(&cells, true, false) {
+            cv.put(c, r, sym, fg, None);
+        }
+    }
+    let blink = s.hurt > 0.0 && (s.hurt * 12.0) as i32 % 2 == 0;
+    let fg = if blink { Color::Rgb(255, 255, 255) } else { Color::Rgb(255, 215, 80) };
+    let (c0, r0, cols, rows) = pipe_ring(cv, s.centre, boss::CORE_R, fg);
+    if cols >= 3 {
+        cv.put(c0 + cols / 2, r0 + rows / 2, "ϟ", fg, None);
+    }
+    if let Some(bolt) = s.bolt(centre, ring) {
+        let cells = walk(cv, bolt.windows(2).flat_map(|w| (0..8).map(move |i| w[0] + (w[1] - w[0]) * (i as f32 / 8.0))));
+        for (c, r, sym) in strokes(&cells, true, false) {
+            cv.put(c, r, sym, Color::Rgb(255, 255, 225), None);
+        }
     }
 }
 
@@ -524,6 +574,9 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     }
     if let Some(w) = &game.vane {
         draw_weathercock(&mut cv, w);
+    }
+    if let (Some(s), Path::Circle { c, r }) = (&game.storm, game.arena.path) {
+        draw_storm(&mut cv, s, c, r, game.time);
     }
 
     for part in &game.particles {

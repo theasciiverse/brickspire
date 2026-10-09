@@ -4,7 +4,8 @@
 //! scales to any terminal; round things (ball, paddle) get analytic anti-aliasing.
 
 use crate::game::{self, Game, Kind, Mode, LEDGE, BALL_R, BRICK_H, BRICK_W, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_TH, WALL, WORLD_H};
-use crate::boss::{self, Gargoyle, Weathercock};
+use crate::boss::{self, Gargoyle, Storm, Weathercock};
+use crate::levels::RoofBoss;
 use crate::roof::{self, RoofView, Seen, Tilt};
 use crate::game::Balcony;
 use crate::physics::{self, V2};
@@ -169,7 +170,7 @@ fn ground(i: u32, j: u32) -> Rgb {
 }
 
 /// The roof's top at roof point `q`: flagstones laid in rings, the paddle's ring
-/// marked, the iron plinth the Weathercock stands on, bricks, and the parapet with
+/// marked, an iron plinth in the middle, bricks, the boss, and the parapet with
 /// its merlons round the rim.
 fn roof_top(game: &Game, roof: &RoofView, q: V2, ps: f32) -> Rgb {
     let off = q - roof.centre;
@@ -200,19 +201,77 @@ fn roof_top(game: &Game, roof: &RoofView, q: V2, ps: f32) -> Rgb {
     if let Some(b) = roof.brick(game, q) {
         c = brick_colour(&b, q, game.time, ps, ps);
     }
-    let waiting;
-    let vane = match &game.vane {
-        Some(w) => Some(w),
-        // still climbing: the Weathercock waits up there, pointing north
-        None if game.arena.mode != Mode::Circle => {
-            waiting = Weathercock::new(roof.centre);
-            Some(&waiting)
+    // still climbing: the roof's boss waits up there
+    let (waiting_vane, waiting_storm);
+    let (mut vane, mut storm) = (game.vane.as_ref(), game.storm.as_ref());
+    match game.waiting_roof_boss() {
+        Some(RoofBoss::Weathercock) => {
+            waiting_vane = Weathercock::new(roof.centre);
+            vane = Some(&waiting_vane);
         }
-        None => None,
-    };
+        Some(RoofBoss::Storm) => {
+            waiting_storm = Storm::new(roof.centre);
+            storm = Some(&waiting_storm);
+        }
+        None => {}
+    }
     if let Some(w) = vane {
         if let Some(wc) = weathercock(w, q - w.centre) {
             c = wc;
+        }
+    }
+    if let Some(s) = storm {
+        c = storm_cloud(s, roof, q, ps, game.time, c);
+    }
+    c
+}
+
+/// The Storm Cloud over roof point `q`, on top of `c`: the mark it puts on the ring
+/// before a bolt, then the bolt itself; churning grey puffs you can see through; and
+/// its glowing core, which blinks white after a hit.
+fn storm_cloud(s: &Storm, roof: &RoofView, q: V2, ps: f32, time: f32, mut c: Rgb) -> Rgb {
+    let off = q - roof.centre;
+    if let Some((a, left)) = s.charging {
+        let gap = (off.y.atan2(off.x) - a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        if gap.abs() < boss::BOLT_SPAN && (off.len() - roof.ring).abs() < 1.8 {
+            // pulsing faster as the strike nears
+            let pulse = 0.5 + 0.5 * (time * (10.0 + 30.0 * (1.0 - left / boss::BOLT_WARN))).sin();
+            c = mix(c, [255.0, 225.0, 90.0], 0.35 + 0.5 * pulse);
+        }
+    }
+    // the cloud: the most each puff covers here, lit from the top left
+    let mut cover = 0.0f32;
+    let mut lit = 0.0f32;
+    for (p, r) in s.puffs() {
+        let l = q - p;
+        let k = ((1.0 - l.len() / r) * 3.0).clamp(0.0, 1.0);
+        if k > cover {
+            cover = k;
+            lit = (0.5 - l.dot(V2::new(-0.6, -0.8)) / r * 0.5).clamp(0.0, 1.0);
+        }
+    }
+    if cover > 0.0 {
+        let mut cloud = mix([165.0, 168.0, 186.0], [62.0, 64.0, 82.0], lit);
+        if s.charging.is_some() && (time * 9.0).sin() > 0.6 {
+            cloud = mix(cloud, [255.0, 240.0, 170.0], 0.3);
+        }
+        c = mix(c, cloud, cover * 0.62);
+    }
+    let d = (q - s.centre).len();
+    if d < boss::CORE_R + ps {
+        let glow = 0.85 + 0.15 * (time * 4.0).sin();
+        let mut core = scale(mix([255.0, 252.0, 215.0], [240.0, 190.0, 50.0], d / boss::CORE_R), glow);
+        if s.hurt > 0.0 && (s.hurt * 12.0) as i32 % 2 == 0 {
+            core = [255.0, 255.0, 255.0];
+        }
+        c = mix(c, core, (boss::CORE_R - d) / ps + 0.5);
+    }
+    if let Some(bolt) = s.bolt(roof.centre, roof.ring) {
+        let near = bolt.windows(2).map(|w| (q - physics::closest_on_segment(q, w[0], w[1])).len()).fold(f32::MAX, f32::min);
+        if near < 0.5 + ps {
+            c = [255.0, 255.0, 235.0];
+        } else if near < 2.0 {
+            c = mix(c, [200.0, 210.0, 255.0], 0.5 * (1.0 - near / 2.0));
         }
     }
     c

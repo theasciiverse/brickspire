@@ -150,7 +150,13 @@ state snapshot about every 500 ms (paddle position and path, balls, active power
 
 ## Open questions
 
-- [ ] How many towers, and a theme per tower?
+- [ ] How many towers, and a theme per tower? (Never settled; David asked 2026-10-09
+      whether it was 7.) Roof bosses David liked, to use them all across the towers:
+      the Storm Cloud (tower 1, built), the Weathercock (built, harder: its gusts bend
+      the ball and its arrow bats it, so save it for later), the Great Bell (swings in
+      the middle; each ring sends a slow shock ring outward that stuns the paddle
+      unless dodged), and the Rook's Nest (a giant crow in a nest with a twig wall the
+      ball must break; it hops round and swoops across the roof).
 - [ ] Two-player co-op or versus over iroh? Doh It Again had both.
 - [ ] A level editor? Doh It Again had one.
 - [ ] Offer a "paddle-centric" view on the roof (the arena turns and the paddle stays at the
@@ -164,7 +170,8 @@ cargo run --release -- --path arc           # preview the mini-boss arc on the s
 cargo run --release -- --path circle        # preview the roof ring (a small test block)
 cargo run --release -- --floor 3            # start on floor 3
 cargo run --release -- --floor 5            # the Gargoyle's balcony (first mini-boss)
-cargo run --release -- --floor 6            # the Weathercock's roof (first tower boss)
+cargo run --release -- --floor 6            # the Storm Cloud's roof (first tower boss)
+cargo run --release -- --floor 6 --roof weathercock   # the Weathercock instead (saved for a later tower)
 cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
 cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5]   # headless frame
@@ -179,9 +186,10 @@ cargo test --release
   paddle bat (normal turned up to 60 degrees by where it hits), the 18% minimum share
   on straight floors, lives, score, particles, and the autoplay `Pilot`.
 - `levels.rs`: floors as text grids, each a kind: plain (straight paddle), balcony
-  (arc, Gargoyle) or roof (ring, Weathercock).
-- `boss.rs`: the Gargoyle (movement, spitting, hits, when it lays a shield) and the
-  Weathercock (turning, gusts, spin-ups, hits).
+  (arc, Gargoyle) or roof (ring, and which roof boss).
+- `boss.rs`: the Gargoyle (movement, spitting, hits, when it lays a shield), the
+  Storm Cloud (drifting, marking the ring, lightning, rain) and the Weathercock
+  (turning, gusts, spin-ups, hits).
 - `roof.rs`: the camera tilting up onto the roof, shared by both renderers (what a
   screen point sees: roof top, parapet, tower side or beyond), and the roof's contents.
 - `tower.rs`: the tower's geometry, shared by both renderers: which floor's face, and
@@ -198,7 +206,7 @@ cargo test --release
 
 Build step 4 done (2026-10-09): circle mode on the roof and the first tower boss. The
 first tower is Ground Floor, The Spire, Chequers, Twin Lanterns, the Gargoyle's
-Balcony, and the Weathercock's Roof; after the roof the climb starts again (next tower:
+Balcony, and the Storm Cloud's Roof; after the roof the climb starts again (next tower:
 step 5). Beating the Gargoyle doesn't turn the tower: the camera rises and tilts to look
 straight down (2.6 s); the roof opens from an ellipse into a circle, the tower's side
 foreshortens away with its faces' tops following the cylinder's curve, the sky gives way
@@ -213,8 +221,18 @@ inside the parapet with open roof between: a ball that gets past the paddle boun
 the 16 merlons (65% of the rim) back into play and is lost only through the gaps. On the
 roof the paddle is longer (18) and faster (188, the same turning speed round the bigger ring) and the ball slower (40 to 66), since
 the paddle may have to go half way round while the ball crosses (a bigger ring alone
-wouldn't help: both distances scale together). Twelve bricks in small groups. The
-Weathercock (16 hits) roams the middle in a slow figure (faster when hurt, still while
+wouldn't help: both distances scale together). Twelve bricks in small groups.
+
+The roof boss is the Storm Cloud (since the same day: David found the Weathercock a
+hard fight, and it moves to a later tower). It drifts over the middle (12 hits on its
+glowing core); the ball always flies straight under it. Its threat is aimed at the
+paddle: every 4.5 s (sooner when hurt) it marks the stretch of ring where the paddle
+is, pulsing for 1.2 s, then lightning strikes there and stuns the paddle for 1 s if
+any of it is still on the mark. Every third hit it rains, and up to three cyan bricks
+grow back round it (never over its core or a ball). The autopilot, which never dodges
+on purpose, beats it in about a minute without losing a ball.
+
+The Weathercock (16 hits, `--roof weathercock`) roams the middle in a slow figure (faster when hurt, still while
 it blows); its arrow turns and bats the ball (can't be hurt), the rooster is the target;
 it shudders, then gusts along the arrow, bending the ball's path; every fourth hit it
 spins up. Beating it climbs the tower: a 5000 bonus.

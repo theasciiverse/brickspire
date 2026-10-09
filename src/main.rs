@@ -21,6 +21,7 @@ mod tower;
 
 use game::{Game, Mode, Pilot, State, STEP};
 use input::Input;
+use levels::RoofBoss;
 use log::{debug, info};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
@@ -55,9 +56,15 @@ fn mode_arg() -> Option<Mode> {
     }
 }
 
-/// A new game on `--floor N` (1-based) if given.
+/// A new game on `--floor N` (1-based) if given; `--roof weathercock` puts the
+/// Weathercock on the roof instead of the Storm Cloud.
 fn new_game() -> Game {
     let mut g = Game::new(mode_arg());
+    g.roof_boss = match arg("--roof").as_deref() {
+        Some("weathercock") => Some(RoofBoss::Weathercock),
+        Some("storm") => Some(RoofBoss::Storm),
+        _ => None,
+    };
     if let Some(n) = arg("--floor").and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 1) {
         g.load_floor(n - 1);
     }
@@ -200,7 +207,14 @@ fn summary(game: &Game) -> String {
         game.left(),
         game.lives,
         game.score,
-        game.vane.as_ref().map_or(String::new(), |w| format!(
+        game.storm.as_ref().map_or(String::new(), |s| format!(
+            " storm at {:.1},{:.1} hp {}/{}{}",
+            s.centre.x,
+            s.centre.y,
+            s.hp,
+            s.max,
+            s.charging.map_or(String::new(), |(a, t)| format!(" marking {:.0} deg ({t:.1} s)", a.to_degrees()))
+        )) + &game.vane.as_ref().map_or(String::new(), |w| format!(
             " weathercock at {:.0} deg hp {}/{}{}{}",
             w.angle.to_degrees(),
             w.hp,
@@ -235,13 +249,14 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
         Span::styled(format!(" FLOOR {} {} ", game.floor + 1, game.floor_name), grey),
         Span::styled(format!(" SCORE {:06} ", game.score), bar.add_modifier(Modifier::BOLD)),
         // (room for a boss's health instead, during a fight)
-        Span::styled(if game.boss.is_some() || game.vane.is_some() { String::new() } else { format!(" BEST {best:06} ") }, grey),
+        Span::styled(if game.boss_left() { String::new() } else { format!(" BEST {best:06} ") }, grey),
         Span::styled(format!(" {lives}"), bar.fg(Color::Rgb(235, 170, 55))),
     ]);
     let mut top = top;
-    let boss_bar = match (&game.boss, &game.vane) {
-        (Some(g), _) => Some(("GARGOYLE", g.hp, g.max)),
-        (_, Some(w)) => Some(("WEATHERCOCK", w.hp, w.max)),
+    let boss_bar = match (&game.boss, &game.vane, &game.storm) {
+        (Some(g), _, _) => Some(("GARGOYLE", g.hp, g.max)),
+        (_, Some(w), _) => Some(("WEATHERCOCK", w.hp, w.max)),
+        (_, _, Some(s)) => Some(("STORM CLOUD", s.hp, s.max)),
         _ => None,
     };
     if let Some((name, hp, max)) = boss_bar {

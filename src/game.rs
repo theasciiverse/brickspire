@@ -3,8 +3,8 @@
 //! A fixed step of `STEP` seconds. The paddle moves first, then each ball is swept
 //! along its motion, bouncing off whatever it touches first, until the step is used up.
 
-use crate::boss::{self, Gargoyle, Hurt, Shot, Weathercock};
-use crate::levels::{self, Floor, FloorKind};
+use crate::boss::{self, Gargoyle, Hurt, Shot, Storm, Weathercock};
+use crate::levels::{self, Floor, FloorKind, RoofBoss};
 use crate::physics::{self, Hit, Path, V2};
 use crate::roof;
 use log::info;
@@ -231,8 +231,11 @@ pub struct Game {
     /// The mini-boss on a boss floor (gone once beaten), its fireballs, and how long
     /// the paddle has left stunned by one.
     pub boss: Option<Gargoyle>,
-    /// The roof's boss, likewise.
+    /// The roof's boss, likewise: the Storm Cloud or the Weathercock.
+    pub storm: Option<Storm>,
     pub vane: Option<Weathercock>,
+    /// A roof boss forced for every roof (`--roof`), instead of each roof's own.
+    pub roof_boss: Option<RoofBoss>,
     pub boss_floor: bool,
     pub shots: Vec<Shot>,
     pub stun: f32,
@@ -251,6 +254,8 @@ enum Thing {
     /// The Weathercock's arrow (bounces, can't be hurt) and its rooster (the target).
     Arrow,
     Rooster,
+    /// The Storm Cloud's core.
+    Core,
 }
 
 pub fn brick_rgb(kind: Kind) -> [u8; 3] {
@@ -324,7 +329,9 @@ impl Game {
             time: 0.0,
             particles: Vec::new(),
             boss: None,
+            storm: None,
             vane: None,
+            roof_boss: None,
             boss_floor: false,
             shots: Vec::new(),
             stun: 0.0,
@@ -344,7 +351,7 @@ impl Game {
         self.forced.unwrap_or(match self.floor_def(n).kind {
             FloorKind::Plain => Mode::Line,
             FloorKind::Balcony => Mode::Arc,
-            FloorKind::Roof => Mode::Circle,
+            FloorKind::Roof(_) => Mode::Circle,
         })
     }
 
@@ -355,10 +362,12 @@ impl Game {
         self.arena = Arena::new(self.floor_mode(n));
         self.boss_floor = def.kind != FloorKind::Plain;
         self.boss = (def.kind == FloorKind::Balcony).then(Gargoyle::new);
-        self.vane = match (def.kind, self.arena.path) {
-            (FloorKind::Roof, Path::Circle { c, .. }) => Some(Weathercock::new(c)),
+        let roof = match (def.kind, self.arena.path) {
+            (FloorKind::Roof(who), Path::Circle { c, .. }) => Some((self.roof_boss.unwrap_or(who), c)),
             _ => None,
         };
+        self.storm = roof.and_then(|(who, c)| (who == RoofBoss::Storm).then(|| Storm::new(c)));
+        self.vane = roof.and_then(|(who, c)| (who == RoofBoss::Weathercock).then(|| Weathercock::new(c)));
         let (cols, rows, cells) = parse(def);
         (self.cols, self.rows) = (cols, rows);
         let (w, h) = (self.cols as f32 * BRICK_W, self.rows as f32 * BRICK_H);
@@ -524,7 +533,7 @@ impl Game {
             info!("life lost: {} left", self.lives);
             self.shots.clear();
             self.state = State::Lost { t: 1.2 };
-        } else if self.boss_floor && self.boss.is_none() && self.vane.is_none() {
+        } else if self.boss_floor && !self.boss_left() {
             info!("floor {} clear, boss beaten: score {}", self.floor + 1, self.score);
             if self.arena.mode == Mode::Circle {
                 info!("tower climbed: bonus {TOWER_BONUS}");
@@ -535,6 +544,19 @@ impl Game {
             info!("floor {} clear: score {}", self.floor + 1, self.score);
             self.clear_floor(0.0);
         }
+    }
+
+    /// Who waits on the roof above, while climbing to it.
+    pub fn waiting_roof_boss(&self) -> Option<RoofBoss> {
+        match self.floor_def(self.floor + 1).kind {
+            FloorKind::Roof(who) if self.roof_next() => Some(self.roof_boss.unwrap_or(who)),
+            _ => None,
+        }
+    }
+
+    /// Is a boss still alive on this floor?
+    pub fn boss_left(&self) -> bool {
+        self.boss.is_some() || self.vane.is_some() || self.storm.is_some()
     }
 
     fn launch(&mut self) {
@@ -623,6 +645,10 @@ impl Game {
                     self.balls[i].v = ball.v.reflect(hit.n);
                     self.hit_vane();
                 }
+                Thing::Core => {
+                    self.balls[i].v = ball.v.reflect(hit.n);
+                    self.hit_storm();
+                }
             }
             self.balls[i].v = self.tidy(self.balls[i].v);
         }
@@ -697,6 +723,9 @@ impl Game {
             take(physics::sweep_capsule(p, d, tail, head, boss::ARROW_TH + BALL_R), Thing::Arrow);
             take(physics::sweep_capsule(p, d, w.centre, w.centre, boss::ROOSTER_R + BALL_R), Thing::Rooster);
         }
+        if let Some(s) = &self.storm {
+            take(physics::sweep_capsule(p, d, s.centre, s.centre, boss::CORE_R + BALL_R), Thing::Core);
+        }
         let (a, b, n) = self.paddle_segment();
         let h = physics::sweep_capsule(p, d, a, b, PADDLE_TH + BALL_R).filter(|h| h.n.dot(n) > -0.3);
         take(h, Thing::Paddle);
@@ -766,6 +795,7 @@ impl Game {
     /// it flew into a ball, the ball is pushed back out.
     fn update_boss(&mut self) {
         self.update_vane();
+        self.update_storm();
         let Some(mut g) = self.boss.take() else { return };
         let live = self.state == State::Play;
         let target = self.arena.path.point(self.paddle.s);
@@ -824,6 +854,99 @@ impl Game {
             self.particles.push(Particle { p, v: wind * 0.9, life, rgb: [200, 215, 235] });
         }
         self.vane = Some(w);
+    }
+
+    /// The Storm Cloud drifts and drizzles, marks the ring and strikes; a strike
+    /// stuns the paddle if any of it is on the marked stretch. A ball its core drifted
+    /// into is pushed back out.
+    fn update_storm(&mut self) {
+        let Some(mut s) = self.storm.take() else { return };
+        let Path::Circle { c, r } = self.arena.path else {
+            self.storm = Some(s);
+            return;
+        };
+        let paddle = self.arena.path.point(self.paddle.s);
+        let at_paddle = (paddle - c).y.atan2((paddle - c).x);
+        let struck = s.update(STEP, self.state == State::Play, at_paddle);
+        for b in self.balls.iter_mut() {
+            let off = b.p - s.centre;
+            let reach = boss::CORE_R + BALL_R;
+            if off.len() < reach && off.len() > 0.0 {
+                let n = off.norm();
+                b.p = s.centre + n * (reach + 1e-3);
+                if b.v.dot(n) < 0.0 {
+                    b.v = b.v.reflect(n);
+                }
+            }
+        }
+        let centre = s.centre;
+        self.storm = Some(s);
+        if self.rand() < 0.35 {
+            let a = self.rand() * 2.0 * PI;
+            let p = centre + V2::new(a.cos(), a.sin()) * (self.rand().sqrt() * boss::CLOUD_R * 0.8);
+            let life = 0.2 + self.rand() * 0.2;
+            self.particles.push(Particle { p, v: V2::new(0.0, 6.0), life, rgb: [110, 150, 225] });
+        }
+        if let Some(a) = struck {
+            let at = c + V2::new(a.cos(), a.sin()) * r;
+            self.burst(at, V2::new(3.0, 3.0), 14, [255, 245, 170], 26.0);
+            // how far round the ring the paddle's middle is from the strike
+            let off = (at_paddle - a + PI).rem_euclid(2.0 * PI) - PI;
+            if off.abs() < boss::BOLT_SPAN + self.paddle_half() / r {
+                info!("paddle struck by lightning");
+                self.stun = STUN;
+                self.burst(paddle, V2::new(2.0, 2.0), 10, [190, 210, 255], 22.0);
+            }
+        }
+    }
+
+    fn hit_storm(&mut self) {
+        let Some(s) = self.storm.as_mut() else { return };
+        let hurt = s.hit();
+        let (at, hp) = (s.centre, s.hp);
+        match hurt {
+            Hurt::Shrugged => return,
+            Hurt::Hurt | Hurt::Shield => {
+                info!("storm cloud hit: {hp} left");
+                self.score += 150;
+                self.burst(at, V2::new(3.0, 3.0), 8, [255, 235, 140], 16.0);
+                if hurt == Hurt::Shield {
+                    self.rain(at);
+                }
+            }
+            Hurt::Dead => {
+                info!("storm cloud beaten");
+                self.score += 4000;
+                self.storm = None;
+                self.burst(at, V2::new(18.0, 18.0), 50, [120, 125, 145], 30.0);
+                self.burst(at, V2::new(4.0, 4.0), 25, [255, 235, 140], 26.0);
+                self.burst(at, V2::new(10.0, 10.0), 25, [110, 150, 225], 20.0);
+            }
+        }
+        self.speed = (self.speed + SPEED_PER_HIT).min(self.speed_max());
+    }
+
+    /// Rain round the cloud: a few empty cells near it (not under its core, and not
+    /// where a ball is) grow cyan bricks back.
+    fn rain(&mut self, at: V2) {
+        let mut cells: Vec<(f32, usize)> = (0..self.bricks.len())
+            .filter(|&i| self.bricks[i].is_none())
+            .filter_map(|i| {
+                let (min, max) = self.brick_box(i);
+                let d = ((min + max) * 0.5 - at).len();
+                let in_the_way = self.balls.iter().any(|b| physics::box_overlap(b.p, min, max, BALL_R + 1.0).is_some());
+                (d > boss::CORE_R + 3.5 && d < boss::CLOUD_R + 1.0 && !in_the_way).then_some((d, i))
+            })
+            .collect();
+        // nearest first, shuffled a little so it isn't always the same cells
+        for c in cells.iter_mut() {
+            c.0 += self.rand() * 4.0;
+        }
+        cells.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for &(_, i) in cells.iter().take(3) {
+            self.bricks[i] = Some(Brick { kind: Kind::Plain(2), hp: 1, flash: 0.15 });
+        }
+        info!("storm rains: {} bricks grow back", cells.len().min(3));
     }
 
     fn hit_vane(&mut self) {
@@ -937,6 +1060,7 @@ impl Game {
         }
         self.boss = None;
         self.vane = None;
+        self.storm = None;
         if self.arena.mode != Mode::Circle {
             self.clear_floor(CLEAR_HOLD);
         } else {
@@ -1095,7 +1219,7 @@ mod tests {
     #[test]
     fn floors_parse() {
         for (i, f) in levels::FLOORS.iter().enumerate() {
-            let width = if f.kind == FloorKind::Roof { 7 } else { 13 };
+            let width = if matches!(f.kind, FloorKind::Roof(_)) { 7 } else { 13 };
             assert!(f.rows.iter().all(|r| r.len() == width), "floor {i} is not {width} wide");
             assert!(f.rows.iter().flat_map(|r| r.chars()).all(|c| ".wocgrbmySG".contains(c)), "floor {i} has a stray character");
         }
@@ -1121,13 +1245,61 @@ mod tests {
         assert_eq!(g.floor, boss + 1, "the gargoyle was never beaten");
         // up onto the roof
         assert_eq!(g.arena.mode, Mode::Circle);
-        assert!(g.vane.is_some());
+        assert!(g.storm.is_some());
+    }
+
+    fn roof_floor() -> usize {
+        levels::FLOORS.iter().position(|f| matches!(f.kind, FloorKind::Roof(_))).expect("a roof")
+    }
+
+    #[test]
+    fn the_storm_cloud_can_be_beaten() {
+        let mut g = Game::new(None);
+        let roof = roof_floor();
+        g.load_floor(roof);
+        assert!(g.storm.is_some() && g.vane.is_none());
+        g.lives = 99;
+        let mut pilot = Pilot::new();
+        let mut strikes = 0;
+        for _ in 0..(400.0 / STEP) as usize {
+            let s = pilot.steer(&g);
+            let was = g.storm.as_ref().is_some_and(|s| s.strike.is_some());
+            g.step(s, true);
+            if !was && g.storm.as_ref().is_some_and(|s| s.strike.is_some()) {
+                strikes += 1;
+            }
+            if g.floor != roof {
+                break;
+            }
+        }
+        assert!(strikes > 0, "no lightning");
+        assert_eq!(g.floor, roof + 1, "the storm cloud was never beaten");
+    }
+
+    #[test]
+    fn a_strike_off_the_paddle_misses() {
+        let mut g = Game::new(None);
+        g.load_floor(roof_floor());
+        g.state = State::Play;
+        g.balls = vec![Ball { p: V2::new(50.0, 28.0), v: V2::new(0.0, 0.0) }];
+        let Path::Circle { c, r } = g.arena.path else { panic!() };
+        // paddle at the bottom, the mark at the top
+        g.paddle.s = g.arena.path.nearest(c + V2::new(0.0, r));
+        g.storm.as_mut().unwrap().charging = Some((-PI / 2.0, 0.0));
+        g.update_storm();
+        assert!(g.storm.as_ref().unwrap().strike.is_some());
+        assert_eq!(g.stun, 0.0);
+        // and on it, it stuns
+        g.storm.as_mut().unwrap().charging = Some((PI / 2.0, 0.0));
+        g.update_storm();
+        assert!(g.stun > 0.0);
     }
 
     #[test]
     fn the_roof_is_a_ring_and_the_weathercock_can_be_beaten() {
         let mut g = Game::new(None);
-        let roof = levels::FLOORS.iter().position(|f| f.kind == FloorKind::Roof).expect("a roof");
+        g.roof_boss = Some(RoofBoss::Weathercock);
+        let roof = roof_floor();
         g.load_floor(roof);
         assert_eq!(g.arena.mode, Mode::Circle);
         g.lives = 99;
@@ -1151,9 +1323,8 @@ mod tests {
     /// A roof with one ball heading straight out from the middle at angle `a`.
     fn roof_shot(a: f32) -> Game {
         let mut g = Game::new(None);
-        let roof = levels::FLOORS.iter().position(|f| f.kind == FloorKind::Roof).unwrap();
-        g.load_floor(roof);
-        g.vane = None;
+        g.load_floor(roof_floor());
+        g.storm = None;
         g.bricks.iter_mut().for_each(|b| *b = None);
         g.state = State::Play;
         let Path::Circle { c, .. } = g.arena.path else { panic!() };
