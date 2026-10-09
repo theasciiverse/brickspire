@@ -1,14 +1,25 @@
-//! The bosses. The mini-boss of the first tower is the Gargoyle: a stone gargoyle come alive on the
-//! balcony floor. It flaps to and fro above the bricks, spits fireballs at the paddle
-//! (a hit stuns the paddle for a moment), and every few hits lays a shield of stone
-//! bricks beneath itself. Those stay where they are laid as it drifts on, so the
-//! field clutters up as the fight goes on. It speeds up as it is hurt.
+//! The bosses. The mini-bosses share one shape of fight, on the balcony: the first
+//! tower's is the Gargoyle, a stone gargoyle come alive. It flaps to and fro above the
+//! bricks, spits fireballs at the paddle (a hit stuns the paddle for a moment), and
+//! every few hits lays a shield of stone bricks beneath itself. Those stay where they
+//! are laid as it drifts on, so the field clutters up as the fight goes on. It speeds
+//! up as it is hurt.
+//!
+//! The second tower's is the Spider, hanging on its thread from the lintel. It
+//! creeps to and fro, rising and dropping on its thread; it spits web at the paddle
+//! (a hit gums it up, slowing it for a while) and spins web bricks beneath itself.
 //!
 //! The first tower's roof boss is the Storm Cloud: a thundercloud drifting over the
 //! roof with a glowing core, the target. The ball always flies straight under it; its
 //! threat is aimed at the paddle instead: it marks a stretch of the ring, and a moment
 //! later lightning strikes there and stuns the paddle if it is still in the way. Every
 //! few hits it rains, and bricks grow back round it.
+//!
+//! The second tower's roof boss is the Rook: a giant crow in a nest of twigs in the
+//! middle of the roof. The ball has to break through the twig wall to reach it. It
+//! hops about the nest, and now and then crouches, glaring at the paddle's spot on
+//! the ring, then swoops out there and back: a paddle still on that spot is stunned.
+//! Every few hits it patches its nest.
 //!
 //! The Weathercock (saved for a later tower's roof) is a giant iron weathervane in the
 //! middle of the roof, roaming round it in a slow figure. Its arrow swings slowly
@@ -19,9 +30,13 @@
 
 use crate::physics::V2;
 use crate::game::WORLD_W;
+pub use crate::levels::MiniKind;
 
-/// Half the Gargoyle's body (its hit box), wingtip to wingtip and horn to claw.
+/// Half the Gargoyle's body (its hit box), wingtip to wingtip and horn to claw; the
+/// Spider's, leg tip to leg tip.
 pub const HALF: V2 = V2::new(7.0, 3.0);
+pub const SPIDER_HALF: V2 = V2::new(4.5, 3.0);
+const WEB_SPEED: f32 = 26.0;
 pub const SHOT_R: f32 = 1.0;
 const SHOT_SPEED: f32 = 34.0;
 const MAX_HP: u8 = 12;
@@ -38,6 +53,8 @@ const HOVER_Y: f32 = 12.5;
 pub struct Shot {
     pub p: V2,
     pub v: V2,
+    /// Web (slows the paddle) rather than fire (stuns it).
+    pub web: bool,
 }
 
 /// What a hit did.
@@ -52,7 +69,8 @@ pub enum Hurt {
 }
 
 #[derive(Clone, Debug)]
-pub struct Gargoyle {
+pub struct MiniBoss {
+    pub kind: MiniKind,
     pub p: V2,
     pub hp: u8,
     pub max: u8,
@@ -68,9 +86,10 @@ pub struct Gargoyle {
     shots_fired: u32,
 }
 
-impl Gargoyle {
-    pub fn new() -> Gargoyle {
-        Gargoyle {
+impl MiniBoss {
+    pub fn new(kind: MiniKind) -> MiniBoss {
+        MiniBoss {
+            kind,
             p: V2::new(WORLD_W / 2.0, HOVER_Y),
             hp: MAX_HP,
             max: MAX_HP,
@@ -88,8 +107,15 @@ impl Gargoyle {
         1.0 + (1.0 - self.hp as f32 / self.max as f32) * 0.9
     }
 
+    pub fn half(&self) -> V2 {
+        match self.kind {
+            MiniKind::Gargoyle => HALF,
+            MiniKind::Spider => SPIDER_HALF,
+        }
+    }
+
     pub fn bounds(&self) -> (V2, V2) {
-        (self.p - HALF, self.p + HALF)
+        (self.p - self.half(), self.p + self.half())
     }
 
     /// Wing angle for drawing: -1 (up) to 1 (down).
@@ -107,19 +133,28 @@ impl Gargoyle {
         self.t += dt;
         self.hurt = (self.hurt - dt).max(0.0);
         self.phase += dt * 0.45 * self.rage();
-        self.p = V2::new(WORLD_W / 2.0 + SWAY * self.phase.sin(), HOVER_Y + 1.5 * (self.t * 1.3).sin());
+        self.p = match self.kind {
+            MiniKind::Gargoyle => V2::new(WORLD_W / 2.0 + SWAY * self.phase.sin(), HOVER_Y + 1.5 * (self.t * 1.3).sin()),
+            // creeping along the lintel, letting its thread out and drawing it in
+            MiniKind::Spider => V2::new(
+                WORLD_W / 2.0 + (SWAY + 2.0) * (self.phase * 0.8).sin(),
+                11.5 + 2.2 * (self.t * 0.7 * self.rage()).sin(),
+            ),
+        };
         if !live {
             return;
         }
         self.reload -= dt;
         if self.reload <= 0.0 {
             let mouth = self.p + V2::new(0.0, 1.0);
-            shots.push(Shot { p: mouth, v: (target - mouth).norm() * SHOT_SPEED });
+            let web = self.kind == MiniKind::Spider;
+            let speed = if web { WEB_SPEED } else { SHOT_SPEED };
+            shots.push(Shot { p: mouth, v: (target - mouth).norm() * speed, web });
             self.shots_fired += 1;
             // a little uneven, so the rhythm can't be learned to the frame
             let wobble = [0.0, 0.5, -0.3, 0.8, 0.2][self.shots_fired as usize % 5];
             self.reload = (2.4 + wobble) / self.rage();
-            log::info!("gargoyle spits at {:.1},{:.1}", target.x, target.y);
+            log::info!("{:?} spits at {:.1},{:.1}", self.kind, target.x, target.y);
         }
     }
 
@@ -278,6 +313,173 @@ impl Storm {
     }
 }
 
+/// The Rook's nest: the twig wall's radius, how many twigs, how thick; the crow's
+/// body.
+pub const NEST_R: f32 = 7.5;
+pub const TWIGS: usize = 14;
+pub const TWIG_TH: f32 = 0.7;
+pub const CROW_R: f32 = 2.6;
+const ROOK_HP: u8 = 14;
+/// Hits it takes between patching its nest, and how many twigs it puts back.
+const REBUILD_EVERY: u8 = 3;
+const REBUILD_TWIGS: usize = 4;
+/// Seconds between swoops (fewer when hurt), how long it crouches first, how long
+/// a swoop takes out and back, and how often it hops about the nest.
+const SWOOP_EVERY: f32 = 6.0;
+pub const SWOOP_WARN: f32 = 1.1;
+const SWOOP_TIME: f32 = 1.6;
+const HOP_EVERY: f32 = 1.1;
+const HOP_TIME: f32 = 0.25;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Flight {
+    Nesting,
+    /// Glaring at angle `a` round the ring, `left` seconds before it goes.
+    Crouching { a: f32, left: f32 },
+    /// Out to angle `a` on the ring and back, `t` 0 to 1; `struck` once it has hit
+    /// the paddle on this swoop.
+    Swooping { a: f32, t: f32, from: V2, struck: bool },
+}
+
+#[derive(Clone, Debug)]
+pub struct Rook {
+    pub nest: V2,
+    pub p: V2,
+    /// Which way it faces (screen angle).
+    pub facing: f32,
+    pub hp: u8,
+    pub max: u8,
+    pub hurt: f32,
+    pub t: f32,
+    pub twigs: [bool; TWIGS],
+    pub flight: Flight,
+    next_swoop: f32,
+    hop: (V2, V2, f32),
+    hops: u32,
+    since_rebuild: u8,
+}
+
+impl Rook {
+    pub fn new(nest: V2) -> Rook {
+        Rook {
+            nest,
+            p: nest,
+            facing: std::f32::consts::FRAC_PI_2,
+            hp: ROOK_HP,
+            max: ROOK_HP,
+            hurt: 0.0,
+            t: 0.0,
+            twigs: [true; TWIGS],
+            flight: Flight::Nesting,
+            next_swoop: 4.0,
+            hop: (nest, nest, 1.0),
+            hops: 0,
+            since_rebuild: 0,
+        }
+    }
+
+    fn rage(&self) -> f32 {
+        1.0 + (1.0 - self.hp as f32 / self.max as f32) * 0.8
+    }
+
+    /// Twig `k` as a segment: a chord of the nest's wall.
+    pub fn twig(&self, k: usize) -> (V2, V2) {
+        let step = std::f32::consts::TAU / TWIGS as f32;
+        let at = |a: f32| self.nest + V2::new(a.cos(), a.sin()) * NEST_R;
+        (at(k as f32 * step), at((k + 1) as f32 * step))
+    }
+
+    /// Fly and hop for `dt`; while `live`, swoop at `target` (an angle round the ring
+    /// of radius `ring`).
+    pub fn update(&mut self, dt: f32, live: bool, ring: f32, target: f32) {
+        self.t += dt;
+        self.hurt = (self.hurt - dt).max(0.0);
+        let towards = |a: f32| self.nest + V2::new(a.cos(), a.sin()) * ring;
+        match self.flight {
+            Flight::Nesting => {
+                let (from, to, k) = self.hop;
+                let k = (k + dt / HOP_TIME).min(1.0);
+                self.p = from + (to - from) * (k * k * (3.0 - 2.0 * k));
+                self.hop.2 = k;
+                if (self.t / HOP_EVERY).floor() != ((self.t - dt) / HOP_EVERY).floor() {
+                    self.hops += 1;
+                    let a = self.hops as f32 * 2.4;
+                    let to = self.nest + V2::new(a.cos(), a.sin()) * (2.5 * ((self.hops as f32 * 1.7).sin() * 0.5 + 0.5));
+                    if to != self.p {
+                        self.facing = (to - self.p).y.atan2((to - self.p).x);
+                    }
+                    self.hop = (self.p, to, 0.0);
+                }
+                if live {
+                    self.next_swoop -= dt;
+                    if self.next_swoop <= 0.0 {
+                        self.flight = Flight::Crouching { a: target, left: SWOOP_WARN };
+                        let d = towards(target) - self.p;
+                        self.facing = d.y.atan2(d.x);
+                        log::info!("rook crouches towards {:.0} degrees", target.to_degrees());
+                    }
+                }
+            }
+            Flight::Crouching { a, left } => {
+                if !live {
+                    self.flight = Flight::Nesting;
+                } else if left <= dt {
+                    self.flight = Flight::Swooping { a, t: 0.0, from: self.p, struck: false };
+                    log::info!("rook swoops");
+                } else {
+                    self.flight = Flight::Crouching { a, left: left - dt };
+                }
+            }
+            Flight::Swooping { a, t, from, struck } => {
+                let t = t + dt / SWOOP_TIME;
+                let out = if t < 0.5 { t * 2.0 } else { (1.0 - t) * 2.0 };
+                let out = out.clamp(0.0, 1.0);
+                let end = towards(a);
+                self.p = from + (end - from) * (out * out * (3.0 - 2.0 * out));
+                let d = if t < 0.5 { end - from } else { from - end };
+                self.facing = d.y.atan2(d.x);
+                if t >= 1.0 {
+                    self.p = from;
+                    self.flight = Flight::Nesting;
+                    self.hop = (from, from, 1.0);
+                    self.next_swoop = SWOOP_EVERY / self.rage();
+                } else {
+                    self.flight = Flight::Swooping { a, t, from, struck };
+                }
+            }
+        }
+    }
+
+    pub fn hit(&mut self) -> Hurt {
+        if self.hurt > 0.0 {
+            return Hurt::Shrugged;
+        }
+        self.hp = self.hp.saturating_sub(1);
+        self.hurt = HURT_TIME;
+        if self.hp == 0 {
+            return Hurt::Dead;
+        }
+        self.since_rebuild += 1;
+        if self.since_rebuild >= REBUILD_EVERY {
+            self.since_rebuild = 0;
+            return Hurt::Shield;
+        }
+        Hurt::Hurt
+    }
+
+    /// Put back up to a few missing twigs (not where `clear` says a ball is).
+    pub fn rebuild(&mut self, clear: impl Fn(V2, V2) -> bool) -> usize {
+        let mut put = 0;
+        for k in 0..TWIGS {
+            if put < REBUILD_TWIGS && !self.twigs[k] && clear(self.twig(k).0, self.twig(k).1) {
+                self.twigs[k] = true;
+                put += 1;
+            }
+        }
+        put
+    }
+}
+
 /// The Weathercock's arrow: half its length and its thickness; its rooster's radius.
 pub const ARROW_HALF: f32 = 9.5;
 pub const ARROW_TH: f32 = 0.8;
@@ -418,7 +620,7 @@ mod tests {
 
     #[test]
     fn stays_between_the_walls() {
-        let mut g = Gargoyle::new();
+        let mut g = MiniBoss::new(MiniKind::Gargoyle);
         let mut shots = Vec::new();
         for _ in 0..20_000 {
             g.update(1.0 / 120.0, true, V2::new(50.0, 50.0), &mut shots);
@@ -481,8 +683,33 @@ mod tests {
     }
 
     #[test]
+    fn the_rook_crouches_swoops_and_comes_home() {
+        let nest = V2::new(50.0, 28.0);
+        let mut r = Rook::new(nest);
+        let (mut swoops, mut furthest) = (0, 0.0f32);
+        for _ in 0..(30.0 * 120.0) as usize {
+            let was = matches!(r.flight, Flight::Swooping { .. });
+            r.update(1.0 / 120.0, true, 26.0, 0.5);
+            if !was && matches!(r.flight, Flight::Swooping { .. }) {
+                swoops += 1;
+            }
+            furthest = furthest.max((r.p - nest).len());
+            if r.flight == Flight::Nesting {
+                // at home it stays inside its twig wall
+                assert!((r.p - nest).len() + CROW_R < NEST_R - TWIG_TH, "{:?}", r.p);
+            }
+        }
+        assert!(swoops >= 3, "{swoops} swoops");
+        assert!(furthest > 25.0, "never reached the ring: {furthest}");
+        r.twigs = [false; TWIGS];
+        r.hp = 10;
+        assert_eq!((r.hit(), r.hit()), (Hurt::Hurt, Hurt::Shrugged));
+        assert_eq!(r.rebuild(|_, _| true), 4);
+    }
+
+    #[test]
     fn shields_every_third_hit_and_dies() {
-        let mut g = Gargoyle::new();
+        let mut g = MiniBoss::new(MiniKind::Gargoyle);
         let mut seen = Vec::new();
         while g.hp > 0 {
             g.hurt = 0.0;

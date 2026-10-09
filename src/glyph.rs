@@ -9,18 +9,17 @@
 //! pixel mode; only the drawing differs.
 
 use crate::game::{self, Game, Kind, Mode, BALL_R, BRICK_H, LEDGE, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF};
-use crate::boss::{self, Gargoyle, Storm, Weathercock};
+use crate::boss::{self, Flight, MiniBoss, MiniKind, Rook, Storm, Weathercock};
 use crate::roof::{self, RoofView, Seen};
 use crate::game::{Balcony, State};
 use crate::physics::{Path, V2};
 use crate::tower::{self, BrickHere, Faces, Sample};
-use crate::render::View;
+use crate::render::{self, View};
+use crate::levels::{self, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
-const SKY: Color = Color::Rgb(6, 8, 22);
-const FIELD: Color = Color::Rgb(20, 22, 42);
 const BALCONY: Color = Color::Rgb(13, 11, 22);
 const STEEL: Color = Color::Rgb(150, 165, 190);
 const BRASS: Color = Color::Rgb(220, 165, 60);
@@ -57,6 +56,14 @@ pub fn view(area: Rect, align: V2, (centre, size): (V2, V2)) -> View {
     let ay = align.y * s + oy;
     oy += (ay / 2.0).round() * 2.0 - ay;
     View { area, s, ox, oy }
+}
+
+/// The theme's sky, `k` of the way down the screen (a little darker than in pixels,
+/// so the glyphs stand out).
+fn sky_colour(theme: &Theme, k: f32) -> Color {
+    let [a, b] = theme.sky;
+    let m = |i: usize| ((a[i] as f32 + (b[i] as f32 - a[i] as f32) * k) * 0.8) as u8;
+    Color::Rgb(m(0), m(1), m(2))
 }
 
 fn rgb(c: [u8; 3]) -> Color {
@@ -276,15 +283,7 @@ fn draw_storm(cv: &mut Canvas, s: &Storm, centre: V2, ring: f32, time: f32) {
     if let Some((a, left)) = s.charging {
         let pulse = (time * (10.0 + 30.0 * (1.0 - left / boss::BOLT_WARN))).sin() > 0.0;
         let fg = if pulse { Color::Rgb(255, 225, 90) } else { Color::Rgb(150, 120, 40) };
-        let n = 24;
-        let span = boss::BOLT_SPAN;
-        let cells = walk(cv, (0..=n).map(|i| {
-            let t = a - span + 2.0 * span * i as f32 / n as f32;
-            centre + V2::new(t.cos(), t.sin()) * ring
-        }));
-        for (c, r, sym) in strokes(&cells, true, false) {
-            cv.put(c, r, sym, fg, None);
-        }
+        ring_mark(cv, centre, ring, a, boss::BOLT_SPAN, fg);
     }
     let blink = s.hurt > 0.0 && (s.hurt * 12.0) as i32 % 2 == 0;
     let fg = if blink { Color::Rgb(255, 255, 255) } else { Color::Rgb(255, 215, 80) };
@@ -300,6 +299,81 @@ fn draw_storm(cv: &mut Canvas, s: &Storm, centre: V2, ring: f32, time: f32) {
     }
 }
 
+/// A heavy stroke along the ring (centre `centre`, radius `ring`), `span` either
+/// side of angle `a`: where something is about to land.
+fn ring_mark(cv: &mut Canvas, centre: V2, ring: f32, a: f32, span: f32, fg: Color) {
+    let n = 24;
+    let cells = walk(cv, (0..=n).map(|i| {
+        let t = a - span + 2.0 * span * i as f32 / n as f32;
+        centre + V2::new(t.cos(), t.sin()) * ring
+    }));
+    for (c, r, sym) in strokes(&cells, true, false) {
+        cv.put(c, r, sym, fg, None);
+    }
+}
+
+/// The Rook's nest: a straw floor, a wall of twigs (gaps where they broke), the
+/// crow a dark ring with its beak an arrow the way it faces, wings out in flight.
+/// While it crouches, a dotted line and a mark on the ring show where it will swoop.
+fn draw_rook(cv: &mut Canvas, rk: &Rook, centre: V2, ring: f32, time: f32) {
+    let (lo, hi) = (cv.cell(rk.nest - V2::new(1.0, 1.0) * boss::NEST_R), cv.cell(rk.nest + V2::new(1.0, 1.0) * boss::NEST_R));
+    for r in lo.1..=hi.1 {
+        for c in lo.0..=hi.0 {
+            if (cv.centre(c, r) - rk.nest).len() < boss::NEST_R - 0.6 {
+                cv.tint(c, r, Color::Rgb(70, 54, 30));
+            }
+        }
+    }
+    for k in (0..boss::TWIGS).filter(|&k| rk.twigs[k]) {
+        let (a, b) = rk.twig(k);
+        let cells = walk(cv, (0..=12).map(|i| a + (b - a) * (i as f32 / 12.0)));
+        for (c, r, sym) in strokes(&cells, true, false) {
+            cv.put(c, r, sym, Color::Rgb(150, 105, 58), None);
+        }
+    }
+    if let Flight::Crouching { a, left } = rk.flight {
+        let end = centre + V2::new(a.cos(), a.sin()) * ring;
+        let pulse = (time * (10.0 + 30.0 * (1.0 - left / boss::SWOOP_WARN))).sin() > 0.0;
+        let fg = if pulse { Color::Rgb(255, 100, 70) } else { Color::Rgb(150, 60, 45) };
+        let d = end - rk.p;
+        let steps = (d.len() / 1.5) as i32;
+        for i in 2..steps {
+            if i % 2 == 0 {
+                let (c, r) = cv.cell(rk.p + d * (i as f32 / steps as f32));
+                cv.put(c, r, "·", fg, None);
+            }
+        }
+        ring_mark(cv, centre, ring, a, (boss::CROW_R + 1.5) / ring, fg);
+    }
+    let blink = rk.hurt > 0.0 && (rk.hurt * 12.0) as i32 % 2 == 0;
+    let dir = V2::new(rk.facing.cos(), rk.facing.sin());
+    let feathers = if blink { Color::Rgb(255, 255, 255) } else { Color::Rgb(95, 95, 125) };
+    if !matches!(rk.flight, Flight::Nesting) {
+        let side = V2::new(-dir.y, dir.x) * (boss::CROW_R + 3.5);
+        let cells = walk(cv, (0..=16).map(|i| rk.p - side + side * (i as f32 / 8.0)));
+        for (c, r, sym) in strokes(&cells, true, false) {
+            cv.put(c, r, sym, feathers, None);
+        }
+    }
+    let (c0, r0, cols, rows) = pipe_ring(cv, rk.p, boss::CROW_R, feathers);
+    for r in r0 + 1..r0 + rows - 1 {
+        for c in c0 + 1..c0 + cols - 1 {
+            cv.tint(c, r, Color::Rgb(20, 20, 28));
+        }
+    }
+    let octant = ((rk.facing / (std::f32::consts::TAU / 8.0)).round() as i32).rem_euclid(8) as usize;
+    let (bc, br) = cv.cell(rk.p + dir * (boss::CROW_R + 0.8));
+    cv.put(bc, br, ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"][octant], if blink { feathers } else { Color::Rgb(225, 200, 110) }, None);
+}
+
+/// The Spider, two rows tall (smallest size) or four, legs one way and the other.
+/// Columns `SPIDER_BODY` are its body, the rest legs.
+const SPIDER_SMALL: [[&str; 2]; 2] = [["╲╭●●╮╱", "╱╰┬┬╯╲"], ["─╭●●╮─", "╱╰┬┬╯╲"]];
+const SPIDER_BIG: [[&str; 4]; 2] = [
+    ["╲╲  ╭──╮  ╱╱", " ╲╲─│●●│─╱╱ ", " ╱╱─╰┬┬╯─╲╲ ", "╱╱   ╵╵   ╲╲"],
+    [" ╲╲ ╭──╮ ╱╱ ", "──╲─│●●│─╱──", "──╱─╰┬┬╯─╲──", " ╱╱  ╵╵  ╲╲ "],
+];
+
 /// The Gargoyle, two rows tall (smallest size) or four, wings up and wings down.
 /// Spaces are see-through; columns `HEAD` are head and body, the rest wings.
 const GARGOYLE_SMALL: [[&str; 2]; 2] = [["╲╲(●▾●)╱╱", "  ╰┴─┴╯  "], ["─╮(●▾●)╭─", "╱╱╰┴─┴╯╲╲"]];
@@ -308,16 +382,33 @@ const GARGOYLE_BIG: [[&str; 4]; 2] = [
     ["        ╲ ╱        ", "───────(●▾●)───────", "╱╱╱  ╭─│   │─╮  ╲╲╲", "       ╰┴───┴╯     "],
 ];
 
-fn draw_gargoyle(cv: &mut Canvas, g: &Gargoyle) {
-    let rows_fit = (boss::HALF.y * cv.view.s).round() as i32;
-    let up = g.flap() < 0.0;
-    let sprite: Vec<&str> = if rows_fit >= 4 {
-        GARGOYLE_BIG[if up { 0 } else { 1 }].to_vec()
-    } else {
-        GARGOYLE_SMALL[if up { 0 } else { 1 }].to_vec()
+fn draw_gargoyle(cv: &mut Canvas, g: &MiniBoss) {
+    let rows_fit = (g.half().y * cv.view.s).round() as i32;
+    let spider = g.kind == MiniKind::Spider;
+    let up = if spider { (g.t * 5.0).sin() < 0.0 } else { g.flap() < 0.0 };
+    let frame = if up { 0 } else { 1 };
+    let sprite: Vec<&str> = match (spider, rows_fit >= 4) {
+        (false, true) => GARGOYLE_BIG[frame].to_vec(),
+        (false, false) => GARGOYLE_SMALL[frame].to_vec(),
+        (true, true) => SPIDER_BIG[frame].to_vec(),
+        (true, false) => SPIDER_SMALL[frame].to_vec(),
     };
     let width = sprite.iter().map(|l| l.chars().count()).max().unwrap_or(0) as i32;
-    let head = if rows_fit >= 4 { 7..=11 } else { 2..=6 };
+    let head = match (spider, rows_fit >= 4) {
+        (false, true) => 7..=11,
+        (false, false) => 2..=6,
+        (true, true) => 4..=7,
+        (true, false) => 1..=4,
+    };
+    if spider {
+        // its thread, up from its back to the lintel
+        let (tc, top) = cv.cell(g.p - V2::new(0.0, g.half().y));
+        let (_, lintel) = cv.cell(V2::new(g.p.x, game::FIELD_TOP));
+        for r in lintel + 1..top {
+            cv.put(tc, r, "│", Color::Rgb(170, 170, 185), None);
+        }
+    }
+    let (body_fg, leg_fg) = if spider { (Color::Rgb(120, 80, 140), Color::Rgb(85, 60, 95)) } else { (GARGOYLE_STONE, GARGOYLE_WING) };
     let blink = g.hurt > 0.0 && (g.hurt * 12.0) as i32 % 2 == 0;
     let px = g.p.x * cv.view.s + cv.view.ox;
     let py = (g.p.y * cv.view.s + cv.view.oy) / 2.0;
@@ -332,9 +423,9 @@ fn draw_gargoyle(cv: &mut Canvas, g: &Gargoyle) {
             } else if ch == '●' {
                 if g.aiming() { Color::Rgb(255, 220, 120) } else { Color::Rgb(255, 60, 40) }
             } else if head.contains(&(c as i32)) {
-                GARGOYLE_STONE
+                body_fg
             } else {
-                GARGOYLE_WING
+                leg_fg
             };
             let mut buf = [0u8; 4];
             cv.put(c0 + c as i32, r0 + r as i32, ch.encode_utf8(&mut buf), fg, None);
@@ -389,6 +480,7 @@ fn lit(c: Color, k: f32) -> Color {
 /// Straight floors: the tower's faces, each cell drawn from what it shows and what
 /// its neighbours show, so bricks keep their ends even squashed round the curve.
 fn draw_tower(cv: &mut Canvas, game: &Game) {
+    let theme = &levels::tower(game.floor).theme;
     let cam = game.camera();
     let faces = Faces::new(game);
     let roof = RoofView::new(game);
@@ -447,7 +539,7 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
         for c in 0..w {
             let here = samples[(r * w + c) as usize];
             let k = here.map_or(1.0, |s| s.light);
-            let wall = lit(if here.is_some_and(|s| s.n < 0) { BALCONY } else { FIELD }, k);
+            let wall = lit(if here.is_some_and(|s| faces.plinth(s.n)) { BALCONY } else { dim(theme.wall, 0.8) }, k);
             match at(c, r) {
                 Part::Sky => {}
                 Part::Merlon => cv.put(c, r, "▒", MERLON, Some(CRENEL)),
@@ -455,7 +547,11 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
                 Part::RoofFloor => cv.bg(c, r, ROOF_FLOOR),
                 Part::Plinth => cv.bg(c, r, PLINTH),
                 Part::ParapetWall => cv.put(c, r, "░", MERLON, Some(CRENEL)),
-                Part::Wall => cv.bg(c, r, wall),
+                Part::Wall => match here.filter(|s| theme.ivy && !faces.plinth(s.n)).and_then(|s| render::ivy(s.n, V2::new(s.u, s.v))) {
+                    // ivy leaves over the wall
+                    Some(leaf) => cv.put(c, r, if leaf > 0.5 { "%" } else { "&" }, lit(dim([80, 150, 60], 0.6 + leaf * 0.4), k), Some(wall)),
+                    None => cv.bg(c, r, wall),
+                },
                 Part::Lintel => {
                     let Some(s) = here else { continue };
                     let left = samples.get((r * w + c - 1) as usize).copied().flatten();
@@ -498,7 +594,7 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
                         (lit(dim(base, 0.3), k), lit(rgb(base), k))
                     };
                     let double = match b.kind {
-                        Kind::Plain(_) | Kind::Stone => false,
+                        Kind::Plain(_) | Kind::Stone | Kind::Vine | Kind::Web => false,
                         Kind::Steel => b.hp > 1,
                         Kind::Gilt => true,
                     };
@@ -514,6 +610,8 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
 fn brick_stroke(kind: Kind, double: bool, left: bool, right: bool, top: bool, bottom: bool) -> &'static str {
     let (ends, run, side, corners) = match (kind, double) {
         (Kind::Gilt, _) => (["╠", "╣"], "═", "║", ["╔", "╗", "╚", "╝"]),
+        (Kind::Vine, _) => (["{", "}"], "~", "§", ["╭", "╮", "╰", "╯"]),
+        (Kind::Web, _) => (["├", "┤"], "┼", "┼", ["┌", "┐", "└", "┘"]),
         (_, true) => (["╞", "╡"], "═", "│", ["╒", "╕", "╘", "╛"]),
         _ => (["├", "┤"], "─", "│", ["┌", "┐", "└", "┘"]),
     };
@@ -545,24 +643,31 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     // sky with stars fixed to the screen, twinkling; or, once the camera looks down
     // from the roof, the ground far below
     let looking_down = game.tilt().is_some_and(|k| k > 0.6);
+    let theme = &levels::tower(game.floor).theme;
     for r in 0..h {
         for c in 0..w {
             let hv = hash(c as u32, r as u32);
+            let sky = sky_colour(theme, r as f32 / h as f32);
             if looking_down {
-                let field = hash(c as u32 / 4, r as u32 / 2) & 0xff;
-                let bg = Color::Rgb(10 + (field / 24) as u8, 18 + (field / 30) as u8, 14);
+                let field = (hash(c as u32 / 4, r as u32 / 2) & 0xff) as f32 / 255.0;
+                let [a, b] = theme.fields;
+                let bg = Color::Rgb(
+                    (a[0] as f32 + (b[0] as f32 - a[0] as f32) * field) as u8,
+                    (a[1] as f32 + (b[1] as f32 - a[1] as f32) * field) as u8,
+                    (a[2] as f32 + (b[2] as f32 - a[2] as f32) * field) as u8,
+                );
                 if hv % 29 == 0 {
                     cv.put(c, r, ".", Color::Rgb(32, 46, 30), Some(bg));
                 } else {
                     cv.bg(c, r, bg);
                 }
-            } else if hv % 53 == 0 {
+            } else if hv % 53 == 0 && ((hv >> 7) & 0xff) as f32 / 255.0 < theme.stars && (r as f32 / h as f32) < 0.25 + 0.75 * theme.stars {
                 let tw = 0.5 + 0.5 * (game.time * (0.6 + (hv >> 22) as f32 / 1024.0 * 1.5) + hv as f32).sin();
                 let sym = ["·", ".", "+", "*"][(hv >> 6) as usize % 4];
                 let k = 0.3 + 0.7 * tw;
-                cv.put(c, r, sym, Color::Rgb((200.0 * k) as u8, (205.0 * k) as u8, (235.0 * k) as u8), Some(SKY));
+                cv.put(c, r, sym, Color::Rgb((200.0 * k) as u8, (205.0 * k) as u8, (235.0 * k) as u8), Some(sky));
             } else {
-                cv.bg(c, r, SKY);
+                cv.bg(c, r, sky);
             }
         }
     }
@@ -578,6 +683,9 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     if let (Some(s), Path::Circle { c, r }) = (&game.storm, game.arena.path) {
         draw_storm(&mut cv, s, c, r, game.time);
     }
+    if let (Some(rk), Path::Circle { c, r }) = (&game.rook, game.arena.path) {
+        draw_rook(&mut cv, rk, c, r, game.time);
+    }
 
     for part in &game.particles {
         let (c, r) = cv.cell(part.p);
@@ -590,7 +698,11 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     }
     for shot in &game.shots {
         let (c, r) = cv.cell(shot.p);
-        cv.put(c, r, "*", FIRE, None);
+        if shot.web {
+            cv.put(c, r, "#", Color::Rgb(225, 225, 235), None);
+        } else {
+            cv.put(c, r, "*", FIRE, None);
+        }
     }
 
     // the paddle: a heavy bar, one stroke per cell along it, teal at the ends (grey
@@ -598,6 +710,9 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     let (body, ends) = if game.stun > 0.0 {
         let grey = if (game.time * 20.0) as i32 % 2 == 0 { Color::Rgb(90, 90, 100) } else { Color::Rgb(160, 160, 170) };
         (grey, grey)
+    } else if game.webbed > 0.0 {
+        // gummed up with silk
+        (Color::Rgb(225, 225, 235), PADDLE_END)
     } else {
         (PADDLE_BODY, PADDLE_END)
     };

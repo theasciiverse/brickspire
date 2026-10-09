@@ -117,11 +117,29 @@ terminal cells being taller than they are wide, so that part is ours to solve.
 
 ## Structure
 
-- Several towers, Nebulus-style. About 10 floors each, a mini-boss partway up (paddle on an arc), and a
-  tower boss on each roof (paddle on a full circle). The last tower's roof boss is the final boss.
+- Five towers, Nebulus-style (decided 2026-10-09; more can be added later if it feels
+  short). About 10 floors each, a mini-boss partway up (paddle on an arc), and a tower
+  boss on each roof (paddle on a full circle). The last tower's roof boss is the final
+  boss. Roof bosses get harder in order.
+- Each tower has a theme: its own look, one new brick type, and bosses that fit it
+  (decided 2026-10-09; the last tower mixes every brick type):
+
+  | # | Tower | Look | New brick | Mini-boss | Roof boss |
+  |---|---|---|---|---|---|
+  | 1 | The Old Keep | grey stone, night sky, fields below | steel, gilt | the Gargoyle | the Storm Cloud |
+  | 2 | The Ivy Tower | mossy stone in a forest, dusk | vine bricks that slide along their row | a giant spider on its web | the Rook's Nest (a giant crow in a nest with a twig wall the ball must break; it hops round and swoops across the roof) |
+  | 3 | The Bell Tower | warm sandstone, sunset | clockwork bricks that tick back in after a while | the clock's jack, the figure that strikes the bell on the hour | the Great Bell (swings in the middle; each ring sends a slow shock ring outward that stuns the paddle unless dodged) |
+  | 4 | The Sea Tower | a lighthouse on a cliff, storm clouds, waves below | ice bricks the ball skids off at a shallower angle | a sea serpent rising beside the balcony | the Weathercock |
+  | 5 | The Brickspire | above the clouds, starry sky | all of them | not decided | the Mason, who built the tower, rebuilding the field as you break it |
+
+- Boss design rule (learned 2026-10-09): keep the ball readable. A boss's threat
+  goes at the paddle (marks, stuns, things to dodge), not at the ball's flight. The
+  Weathercock breaks this (gusts bend the ball, the arrow bats it), which is why it
+  was too hard as the first roof boss and moved to tower 4.
 - Power-up capsules follow the classic set (wider paddle, catch, laser, slow, split ball, extra
   life, skip to the next floor) under our own names.
-- Bricks: ordinary, hard (several hits), indestructible, regenerating, sliding.
+- Bricks: ordinary, hard (several hits), indestructible, plus one new type per tower
+  (sliding vine, regenerating clockwork, ice).
 
 ## Input
 
@@ -150,13 +168,8 @@ state snapshot about every 500 ms (paddle position and path, balls, active power
 
 ## Open questions
 
-- [ ] How many towers, and a theme per tower? (Never settled; David asked 2026-10-09
-      whether it was 7.) Roof bosses David liked, to use them all across the towers:
-      the Storm Cloud (tower 1, built), the Weathercock (built, harder: its gusts bend
-      the ball and its arrow bats it, so save it for later), the Great Bell (swings in
-      the middle; each ring sends a slow shock ring outward that stuns the paddle
-      unless dodged), and the Rook's Nest (a giant crow in a nest with a twig wall the
-      ball must break; it hops round and swoops across the roof).
+- [x] How many towers, and a theme per tower? Five, themed (see Structure).
+- [ ] Tower 5's mini-boss.
 - [ ] Two-player co-op or versus over iroh? Doh It Again had both.
 - [ ] A level editor? Doh It Again had one.
 - [ ] Offer a "paddle-centric" view on the roof (the arena turns and the paddle stays at the
@@ -171,6 +184,7 @@ cargo run --release -- --path circle        # preview the roof ring (a small tes
 cargo run --release -- --floor 3            # start on floor 3
 cargo run --release -- --floor 5            # the Gargoyle's balcony (first mini-boss)
 cargo run --release -- --floor 6            # the Storm Cloud's roof (first tower boss)
+cargo run --release -- --floor 7            # the Ivy Tower (floors 7 to 12: spider on 11, rook on 12)
 cargo run --release -- --floor 6 --roof weathercock   # the Weathercock instead (saved for a later tower)
 cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
@@ -185,11 +199,14 @@ cargo test --release
 - `game.rs`: the rules at a fixed 120 Hz step; `Arena` per mode, bricks on a grid,
   paddle bat (normal turned up to 60 degrees by where it hits), the 18% minimum share
   on straight floors, lives, score, particles, and the autoplay `Pilot`.
-- `levels.rs`: floors as text grids, each a kind: plain (straight paddle), balcony
-  (arc, Gargoyle) or roof (ring, and which roof boss).
-- `boss.rs`: the Gargoyle (movement, spitting, hits, when it lays a shield), the
-  Storm Cloud (drifting, marking the ring, lightning, rain) and the Weathercock
-  (turning, gusts, spin-ups, hits).
+- `levels.rs`: the towers, each a theme (sky, stone, ground, ivy), its mini-boss and
+  its floors; floors as text grids, each a kind: plain (straight paddle), balcony
+  (arc) or roof (ring, and which roof boss). Floors are numbered straight through
+  all the towers.
+- `boss.rs`: the mini-bosses, one shape of fight in two kinds (the Gargoyle spits
+  fire and lays stone, the Spider spits web and spins web bricks), the Storm Cloud
+  (drifting, marking the ring, lightning, rain), the Rook (twig nest, hopping,
+  crouch and swoop, patching) and the Weathercock (turning, gusts, spin-ups, hits).
 - `roof.rs`: the camera tilting up onto the roof, shared by both renderers (what a
   screen point sees: roof top, parapet, tower side or beyond), and the roof's contents.
 - `tower.rs`: the tower's geometry, shared by both renderers: which floor's face, and
@@ -203,6 +220,28 @@ cargo test --release
 - `input.rs`: keys (exact or timing), mouse chase and click, gamepad (stick aims on the roof).
 
 ## Status
+
+Build step 5 started (2026-10-09): towers. The game now has two of the five
+towers, numbered straight through (`--floor 7` is the Ivy Tower's ground floor);
+after the last tower the climb starts again. Each tower has its own theme: the Old
+Keep's night sky and blue-grey stone, the Ivy Tower's dusk sky, mossy stone with ivy
+over the walls (thickest hanging from the lintels) and forest below. Only the
+current tower's floors show on the tower: below its first floor is plinth. Moving
+from one tower to the next is still a cut after the roof's 3.5 s hold.
+
+The Ivy Tower: four floors with vine bricks (green, leafy, a stem along the middle):
+every 1.4 s each vine steps one cell along its row, gliding over 0.35 s, and turns
+back at a brick, the edge or a ball (alternate rows set off opposite ways). Its
+balcony has the Spider (12 hits): it hangs on its thread from the lintel, creeping
+to and fro and rising and dropping; it spits web (slower than fire) that gums up
+the paddle (40% speed for 2.5 s), and every third hit spins a row of web bricks. On
+its roof the Rook (14 hits) sits in a nest of 14 twigs the ball must break through;
+it hops about the nest, then crouches (1.1 s: a dotted line and a mark on the ring
+where the paddle is), swoops out there and back (1.6 s), and stuns the paddle if it
+is still there; every third hit it puts back up to four twigs. The autopilot beats
+the Spider and the Rook in about 90 s each (the first tower's in about a minute).
+The Spider's balcony has steel in its top corners, not gilt: the autopilot got the
+ball stuck between a gilt corner and the end of the arc.
 
 Build step 4 done (2026-10-09): circle mode on the roof and the first tower boss. The
 first tower is Ground Floor, The Spire, Chequers, Twin Lanterns, the Gargoyle's

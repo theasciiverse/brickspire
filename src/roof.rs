@@ -157,6 +157,10 @@ impl RoofView {
     }
 
     pub fn brick(&self, game: &Game, q: V2) -> Option<BrickHere> {
+        if self.live {
+            let (i, b, l) = game.brick_at(q)?;
+            return Some(BrickHere { id: (-1, i), kind: b.kind, hp: b.hp, flash: b.flash, lx: l.x, ly: l.y });
+        }
         let local = q - self.origin;
         if local.x < 0.0 || local.y < 0.0 {
             return None;
@@ -166,14 +170,9 @@ impl RoofView {
             return None;
         }
         let i = r * self.cols + c;
-        let (kind, hp, flash) = if self.live {
-            let b = game.bricks[i]?;
-            (b.kind, b.hp, b.flash)
-        } else {
-            let k = self.cells[i]?;
-            (k, if k == Kind::Steel { 2 } else { 1 }, 0.0)
-        };
-        Some(BrickHere { id: (-1, i), kind, hp, flash, lx: local.x.rem_euclid(BRICK_W), ly: local.y.rem_euclid(BRICK_H) })
+        let kind = self.cells[i]?;
+        let hp = if kind == Kind::Steel { 2 } else { 1 };
+        Some(BrickHere { id: (-1, i), kind, hp, flash: 0.0, lx: local.x.rem_euclid(BRICK_W), ly: local.y.rem_euclid(BRICK_H) })
     }
 }
 

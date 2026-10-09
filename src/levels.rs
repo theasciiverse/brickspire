@@ -1,8 +1,13 @@
-//! Floor layouts as small text grids, one character per brick.
+//! The towers, each a theme and a list of floors; floor layouts as small text grids,
+//! one character per brick.
 //!
 //! `.` empty; colours `w` white, `o` orange, `c` cyan, `g` green, `r` red, `b` blue,
 //! `m` magenta, `y` yellow; `S` steel (takes several hits); `G` gilt (can't be broken,
-//! and doesn't count towards clearing the floor); `s` stone (what the Gargoyle lays).
+//! and doesn't count towards clearing the floor); `s` stone (what the Gargoyle lays);
+//! `v` vine (slides along its row); `W` web (what the spider spins).
+//!
+//! Floors are numbered straight through all the towers (0 is the first tower's ground
+//! floor); after the last tower the climb starts again from the first.
 //!
 //! A boss floor is cleared by beating its boss, not its bricks: the balcony puts the
 //! paddle on an arc against the Gargoyle, the roof on a full ring round the roof's boss.
@@ -21,7 +26,94 @@ pub enum FloorKind {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum RoofBoss {
     Storm,
+    Rook,
     Weathercock,
+}
+
+/// Who waits on a balcony.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum MiniKind {
+    Gargoyle,
+    Spider,
+}
+
+/// A tower's look: sky, stone, the ground far below.
+pub struct Theme {
+    /// Sky at the top of the screen and at the bottom, and how many stars show
+    /// (0 none, 1 a full night sky).
+    pub sky: [[u8; 3]; 2],
+    pub stars: f32,
+    /// The tower's wall behind the bricks, and its mortar.
+    pub wall: [u8; 3],
+    pub mortar: [u8; 3],
+    /// The ground seen from the roof: two field colours.
+    pub fields: [[u8; 3]; 2],
+    /// Ivy growing over the walls.
+    pub ivy: bool,
+}
+
+pub struct Tower {
+    pub name: &'static str,
+    pub theme: Theme,
+    pub mini: MiniKind,
+    pub floors: &'static [Floor],
+}
+
+pub const TOWERS: &[Tower] = &[
+    Tower {
+        name: "The Old Keep",
+        theme: Theme {
+            sky: [[6, 8, 26], [24, 14, 44]],
+            stars: 1.0,
+            wall: [26, 28, 48],
+            mortar: [14, 16, 30],
+            fields: [[10, 18, 14], [24, 28, 17]],
+            ivy: false,
+        },
+        mini: MiniKind::Gargoyle,
+        floors: OLD_KEEP,
+    },
+    Tower {
+        name: "The Ivy Tower",
+        theme: Theme {
+            sky: [[34, 26, 64], [150, 78, 70]],
+            stars: 0.35,
+            wall: [34, 40, 38],
+            mortar: [18, 22, 22],
+            fields: [[8, 26, 12], [14, 40, 16]],
+            ivy: true,
+        },
+        mini: MiniKind::Spider,
+        floors: IVY_TOWER,
+    },
+];
+
+/// How many floors in all the towers together.
+pub fn total() -> usize {
+    TOWERS.iter().map(|t| t.floors.len()).sum()
+}
+
+/// Which tower floor `n` is in, and that tower's first floor.
+pub fn tower_of(n: usize) -> (usize, usize) {
+    let lap = n / total() * total();
+    let mut first = lap;
+    for (i, t) in TOWERS.iter().enumerate() {
+        if n < first + t.floors.len() {
+            return (i, first);
+        }
+        first += t.floors.len();
+    }
+    unreachable!()
+}
+
+pub fn tower(n: usize) -> &'static Tower {
+    &TOWERS[tower_of(n).0]
+}
+
+/// Floor `n`, counted through all the towers.
+pub fn floor(n: usize) -> &'static Floor {
+    let (t, first) = tower_of(n);
+    &TOWERS[t].floors[n - first]
 }
 
 pub struct Floor {
@@ -32,7 +124,7 @@ pub struct Floor {
 
 /// The first tower: flat floors 13 bricks across, the balcony partway up, the roof
 /// on top (a few groups of bricks round the middle, where the Storm Cloud drifts).
-pub const FLOORS: &[Floor] = &[
+pub const OLD_KEEP: &[Floor] = &[
     Floor {
         name: "Ground Floor",
         rows: &["SSSSSSSSSSSSS", "rrrrrrrrrrrrr", "yyyyyyyyyyyyy", "bbbbbbbbbbbbb", "mmmmmmmmmmmmm", "ggggggggggggg"],
@@ -110,6 +202,88 @@ pub const FLOORS: &[Floor] = &[
             ".......",
         ],
         kind: FloorKind::Roof(RoofBoss::Storm),
+    },
+];
+
+/// The second tower, overgrown: vines slide along their rows, the spider hangs over
+/// the balcony, the rook nests on the roof (the middle of the roof is its nest).
+pub const IVY_TOWER: &[Floor] = &[
+    Floor {
+        name: "The Ivy Gate",
+        rows: &["ggggggggggggg", "yyyyyyyyyyyyy", "vvvv.....vvvv", ".............", "oooooo.oooooo", "SS.........SS"],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "Creepers",
+        rows: &[
+            "G...........G",
+            "vvv...vvv....",
+            "....vvv...vvv",
+            "ggggggggggggg",
+            "..vvv....vvv.",
+            "rrrrrrrrrrrrr",
+            "SSS.SSSSS.SSS",
+        ],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "The Trellis",
+        rows: &[
+            "S.S.S.S.S.S.S",
+            "ggggg...ggggg",
+            ".vvvv...vvvv.",
+            "ccccccccccccc",
+            ".v.v.v.v.v.v.",
+            "bbbbbbbbbbbbb",
+            "vvvv.....vvvv",
+        ],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "Overgrown",
+        rows: &[
+            "..ggggggggg..",
+            ".gyyyyyyyyyg.",
+            "gy.vvv.vvv.yg",
+            "gy..SS.SS..yg",
+            "gy.vvv.vvv.yg",
+            ".gyyyyyyyyyg.",
+            "..ggggggggg..",
+            "G...........G",
+        ],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "The Spider's Balcony",
+        // the top rows stay open: the spider hangs there, and spins its web in row 4
+        rows: &[
+            ".............",
+            ".............",
+            ".............",
+            ".............",
+            "S...........S",
+            "vvv..ggg..vvv",
+            "..g.......g..",
+        ],
+        kind: FloorKind::Balcony,
+    },
+    Floor {
+        name: "The Rook's Roof",
+        // round the edge of the roof: the rook's nest fills the middle
+        rows: &[
+            ".......",
+            "g.vvv.g",
+            ".......",
+            ".......",
+            "y.....y",
+            "S.....S",
+            "y.....y",
+            ".......",
+            ".......",
+            "g.vvv.g",
+            ".......",
+        ],
+        kind: FloorKind::Roof(RoofBoss::Rook),
     },
 ];
 

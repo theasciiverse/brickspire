@@ -94,19 +94,23 @@ struct Grid {
 }
 
 /// The bricks of the floors near the camera: the live current floor, the full layouts
-/// of the floors above, and only the gilt left on the floors already cleared.
+/// of the floors above, and only the gilt left on the floors already cleared. Only
+/// this tower's floors: below its first is the plinth, and its roof is no face.
 pub struct Faces {
     floor: i64,
+    first: i64,
     grids: Vec<Grid>,
 }
 
 impl Faces {
     pub fn new(game: &Game) -> Faces {
         let floor = game.floor as i64;
+        let (t, first) = levels::tower_of(game.floor);
+        let (first, roof) = (first as i64, (first + levels::TOWERS[t].floors.len() - 1) as i64);
         let grids = (floor - 8..=floor + 8)
-            .filter(|&n| n >= 0 && n != floor)
+            .filter(|&n| n >= first && n < roof && n != floor)
             .map(|n| {
-                let def = &levels::FLOORS[n as usize % levels::FLOORS.len()];
+                let def = levels::floor(n as usize);
                 let (cols, rows, mut cells) = game::parse(def);
                 if n < floor {
                     for c in cells.iter_mut() {
@@ -118,7 +122,12 @@ impl Faces {
                 Grid { n, boss: def.kind == FloorKind::Balcony, origin: game::line_origin(cols), cols, rows, cells }
             })
             .collect();
-        Faces { floor, grids }
+        Faces { floor, first, grids }
+    }
+
+    /// Is floor `n`'s face the plain plinth below the tower's first floor?
+    pub fn plinth(&self, n: i64) -> bool {
+        n < self.first
     }
 
     /// Does floor `n`'s face have the boss balcony in front of it?
@@ -133,16 +142,8 @@ impl Faces {
     pub fn brick(&self, game: &Game, n: i64, u: f32, v: f32) -> Option<BrickHere> {
         let p = V2::new(u, v);
         if n == self.floor {
-            let (i, b) = game.brick_at(p)?;
-            let q = p - game.origin;
-            return Some(BrickHere {
-                id: (n, i),
-                kind: b.kind,
-                hp: b.hp,
-                flash: b.flash,
-                lx: q.x.rem_euclid(BRICK_W),
-                ly: q.y.rem_euclid(BRICK_H),
-            });
+            let (i, b, l) = game.brick_at(p)?;
+            return Some(BrickHere { id: (n, i), kind: b.kind, hp: b.hp, flash: b.flash, lx: l.x, ly: l.y });
         }
         let g = self.grids.iter().find(|g| g.n == n)?;
         let q = p - g.origin;

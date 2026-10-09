@@ -4,8 +4,8 @@
 //! scales to any terminal; round things (ball, paddle) get analytic anti-aliasing.
 
 use crate::game::{self, Game, Kind, Mode, LEDGE, BALL_R, BRICK_H, BRICK_W, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_TH, WALL, WORLD_H};
-use crate::boss::{self, Gargoyle, Storm, Weathercock};
-use crate::levels::RoofBoss;
+use crate::boss::{self, Flight, MiniBoss, MiniKind, Rook, Storm, Weathercock};
+use crate::levels::{self, RoofBoss, Theme};
 use crate::roof::{self, RoofView, Seen, Tilt};
 use crate::game::Balcony;
 use crate::physics::{self, V2};
@@ -60,11 +60,13 @@ fn hash(x: u32, y: u32) -> u32 {
     h ^ (h >> 16)
 }
 
-/// Night sky with stars fixed to the screen, twinkling.
-fn sky(i: u32, j: u32, h_px: f32, time: f32) -> Rgb {
-    let base = mix([6.0, 8.0, 26.0], [24.0, 14.0, 44.0], j as f32 / h_px);
+/// The tower's sky, darker at the top, with stars fixed to the screen, twinkling
+/// (as many as its theme has).
+fn sky(theme: &Theme, i: u32, j: u32, h_px: f32, time: f32) -> Rgb {
+    let base = mix(rgb(theme.sky[0]), rgb(theme.sky[1]), j as f32 / h_px);
     let h = hash(i, j);
-    if h % 89 == 0 {
+    let starry = (j as f32 / h_px) < 0.25 + 0.75 * theme.stars;
+    if h % 89 == 0 && starry && ((h >> 7) & 0xff) as f32 / 255.0 < theme.stars.max(0.5) {
         let tw = 0.55 + 0.45 * (time * (0.7 + (h >> 20) as f32 / 4096.0 * 2.0) + h as f32).sin();
         let k = (0.35 + ((h >> 8) & 0xff) as f32 / 255.0 * 0.65) * tw;
         return mix(base, [235.0, 235.0, 255.0], k);
@@ -74,11 +76,23 @@ fn sky(i: u32, j: u32, h_px: f32, time: f32) -> Rgb {
 
 /// The tower's own wall behind the bricks: faint masonry. `psx`/`psy` are a
 /// pixel's size across and down, so mortar stays a pixel thick where the face is squashed.
-fn masonry(p: V2, psx: f32, psy: f32) -> Rgb {
+fn masonry(theme: &Theme, p: V2, psx: f32, psy: f32) -> Rgb {
     let row = (p.y / 4.0).floor();
     let x = p.x + if row as i32 % 2 == 0 { 0.0 } else { 4.0 };
     let mortar = p.y.rem_euclid(4.0) < psy || x.rem_euclid(8.0) < psx;
-    if mortar { [14.0, 16.0, 30.0] } else { [26.0, 28.0, 48.0] }
+    rgb(if mortar { theme.mortar } else { theme.wall })
+}
+
+/// Ivy on floor `n`'s wall at face point `p`: leaves in clumps, thickest hanging
+/// from the lintel. `None` where the wall shows through.
+pub fn ivy(n: i64, p: V2) -> Option<f32> {
+    let seed = n as f32 * 3.7;
+    let clumps = 0.5 + 0.5 * (p.x * 0.21 + (p.y * 0.13 + seed).sin() * 2.0 + seed).sin() * (p.y * 0.17 + p.x * 0.05 - seed).cos();
+    let hanging = (1.0 - (p.y - FIELD_TOP) / 18.0).max(0.0) * 0.6;
+    let (cx, cy) = ((p.x / 1.5).floor(), (p.y / 1.5).floor());
+    let h = hash(cx as i32 as u32 ^ (n as u32).wrapping_mul(977), cy as i32 as u32);
+    let k = (h & 0xff) as f32 / 255.0;
+    (k < (clumps + hanging - 0.6) * 0.8).then_some(((h >> 8) & 0xff) as f32 / 255.0)
 }
 
 /// Steel pipe, lit across its width (`across` 0 to 1), with brass bands along it.
@@ -94,6 +108,16 @@ fn pipe(across: f32, along: f32, ps: f32) -> Rgb {
 /// sweeping over metal ones, white while flashing from a hit.
 fn brick_colour(b: &tower::BrickHere, at: V2, time: f32, psx: f32, psy: f32) -> Rgb {
     let mut base = rgb(game::brick_rgb(b.kind));
+    if b.kind == Kind::Vine {
+        // a stem along the middle, leaves either side
+        let stem = (b.ly - BRICK_H / 2.0 - (b.lx * 1.4).sin() * 0.4).abs() < psy * 0.6;
+        let leaf = ((b.lx * 1.9).sin() * (b.ly * 2.6 + b.lx).cos()) > 0.15;
+        base = if stem { [70.0, 60.0, 30.0] } else if leaf { [150.0, 235.0, 110.0] } else { [70.0, 175.0, 70.0] };
+    } else if b.kind == Kind::Web {
+        // silk strands criss-crossing, the wall dim behind
+        let strand = (b.lx + b.ly * 1.6).rem_euclid(2.0) < psx || (b.lx - b.ly * 1.6).rem_euclid(2.0) < psx;
+        base = if strand { [225.0, 225.0, 235.0] } else { [70.0, 70.0, 82.0] };
+    }
     if b.kind == Kind::Steel || b.kind == Kind::Gilt {
         let sheen = ((at.x + at.y * 2.0 - time * 30.0).rem_euclid(60.0) - 30.0).abs() < 2.0;
         if sheen {
@@ -116,6 +140,7 @@ fn brick_colour(b: &tower::BrickHere, at: V2, time: f32, psx: f32, psy: f32) -> 
 /// Straight floors: whichever face of the tower is under `p`.
 fn tower_face(game: &Game, faces: &Faces, cam: f32, p: V2, ps: f32, bg: Rgb) -> Rgb {
     let Some(s) = tower::sample(p.x, p.y, cam) else { return bg };
+    let theme = &levels::tower(game.floor).theme;
     let (u, v) = (s.u, s.v);
     let (psx, psy) = (ps * s.squash, ps);
     let c = if v < FIELD_TOP {
@@ -132,11 +157,13 @@ fn tower_face(game: &Game, faces: &Faces, cam: f32, p: V2, ps: f32, bg: Rgb) -> 
         }
     } else if let Some(b) = faces.brick(game, s.n, u, v) {
         brick_colour(&b, V2::new(u, v), game.time, psx, psy)
+    } else if let Some(leaf) = ivy(s.n, V2::new(u, v)).filter(|_| theme.ivy && !faces.plinth(s.n)) {
+        mix([26.0, 62.0, 34.0], [80.0, 140.0, 56.0], leaf)
     } else {
-        masonry(V2::new(u, v), psx, psy)
+        masonry(theme, V2::new(u, v), psx, psy)
     };
     // the plinth below the first floor is plain and darker
-    let mut c = if s.n < 0 && v >= FIELD_TOP { scale(masonry(V2::new(u, v), psx, psy), 0.7) } else { c };
+    let mut c = if faces.plinth(s.n) && v >= FIELD_TOP { scale(masonry(theme, V2::new(u, v), psx, psy), 0.7) } else { c };
     if faces.balcony(game, s.n) {
         // the balcony curves round in front of this face, under the paddle's arc
         let (centre, r) = game::balcony_arc();
@@ -155,10 +182,10 @@ fn tower_face(game: &Game, faces: &Faces, cam: f32, p: V2, ps: f32, bg: Rgb) -> 
 
 /// The ground far below, seen from above the tower: dark fields, specks of trees
 /// and the odd light.
-fn ground(i: u32, j: u32) -> Rgb {
+fn ground(theme: &Theme, i: u32, j: u32) -> Rgb {
     // fields in patches, darker specks of trees, and a rare lit window
     let field = hash(i / 7, j / 4);
-    let base = mix([10.0, 18.0, 14.0], [24.0, 28.0, 17.0], (field & 0xff) as f32 / 255.0);
+    let base = mix(rgb(theme.fields[0]), rgb(theme.fields[1]), (field & 0xff) as f32 / 255.0);
     let speck = hash(i, j);
     if speck % 1013 == 0 {
         [150.0, 120.0, 60.0]
@@ -202,9 +229,13 @@ fn roof_top(game: &Game, roof: &RoofView, q: V2, ps: f32) -> Rgb {
         c = brick_colour(&b, q, game.time, ps, ps);
     }
     // still climbing: the roof's boss waits up there
-    let (waiting_vane, waiting_storm);
-    let (mut vane, mut storm) = (game.vane.as_ref(), game.storm.as_ref());
+    let (waiting_vane, waiting_storm, waiting_rook);
+    let (mut vane, mut storm, mut rook) = (game.vane.as_ref(), game.storm.as_ref(), game.rook.as_ref());
     match game.waiting_roof_boss() {
+        Some(RoofBoss::Rook) => {
+            waiting_rook = Rook::new(roof.centre);
+            rook = Some(&waiting_rook);
+        }
         Some(RoofBoss::Weathercock) => {
             waiting_vane = Weathercock::new(roof.centre);
             vane = Some(&waiting_vane);
@@ -223,6 +254,78 @@ fn roof_top(game: &Game, roof: &RoofView, q: V2, ps: f32) -> Rgb {
     if let Some(s) = storm {
         c = storm_cloud(s, roof, q, ps, game.time, c);
     }
+    if let Some(r) = rook {
+        c = rook_nest(r, roof, q, ps, game.time, c);
+    }
+    c
+}
+
+/// A warning on the ring: the stretch `span` either side of angle `a`, pulsing in
+/// `rgb`, faster as `left` of `warn` seconds runs out.
+fn ring_mark(roof: &RoofView, q: V2, a: f32, span: f32, left: f32, warn: f32, time: f32, rgb: Rgb, c: Rgb) -> Rgb {
+    let off = q - roof.centre;
+    let gap = (off.y.atan2(off.x) - a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    if gap.abs() < span && (off.len() - roof.ring).abs() < 1.8 {
+        let pulse = 0.5 + 0.5 * (time * (10.0 + 30.0 * (1.0 - left / warn))).sin();
+        mix(c, rgb, 0.35 + 0.5 * pulse)
+    } else {
+        c
+    }
+}
+
+/// The Rook's nest at roof point `q`, over `c`: a woven straw floor ringed by twigs
+/// (gaps where the ball broke them), and the crow. While it crouches, a dashed line
+/// and a mark on the ring show where it is about to swoop. It spreads its wings in
+/// flight and blinks white after a hit.
+fn rook_nest(r: &Rook, roof: &RoofView, q: V2, ps: f32, time: f32, mut c: Rgb) -> Rgb {
+    let off = q - r.nest;
+    if off.len() < boss::NEST_R - 0.4 {
+        let weave = (off.x * 1.7 + off.y * 0.9).sin() * (off.y * 1.9 - off.x * 0.6).sin();
+        c = mix([96.0, 74.0, 42.0], [140.0, 112.0, 64.0], weave * 0.5 + 0.5);
+    }
+    for k in (0..boss::TWIGS).filter(|&k| r.twigs[k]) {
+        let (a, b) = r.twig(k);
+        let near = physics::closest_on_segment(q, a, b);
+        let d = (q - near).len();
+        if d < boss::TWIG_TH + ps * 0.5 {
+            let along = (near - a).len();
+            let bark = (along * 2.3 + k as f32).sin() > 0.6;
+            let wood = mix([150.0, 105.0, 58.0], [70.0, 46.0, 26.0], d / boss::TWIG_TH);
+            c = if bark { scale(wood, 0.7) } else { wood };
+        }
+    }
+    if let Flight::Crouching { a, left } = r.flight {
+        let end = r.nest + V2::new(a.cos(), a.sin()) * roof.ring;
+        let near = physics::closest_on_segment(q, r.p, end);
+        if (q - near).len() < 0.5 && ((near - r.p).len() / 1.5) as i32 % 2 == 0 && (near - r.p).len() > boss::CROW_R + 1.0 {
+            c = mix(c, [255.0, 90.0, 60.0], 0.7);
+        }
+        c = ring_mark(roof, q, a, (boss::CROW_R + 1.5) / roof.ring, left, boss::SWOOP_WARN, time, [255.0, 90.0, 60.0], c);
+    }
+    // the crow, in its own frame: along its facing and across
+    let l = q - r.p;
+    let dir = V2::new(r.facing.cos(), r.facing.sin());
+    let side = V2::new(-dir.y, dir.x);
+    let (along, across) = (l.dot(dir), l.dot(side));
+    let flying = !matches!(r.flight, Flight::Nesting);
+    let mut crow = None;
+    if flying {
+        let beat = if matches!(r.flight, Flight::Swooping { .. }) { (time * 14.0).sin() * 0.6 } else { 0.0 };
+        let reach = boss::CROW_R + 4.0 + beat;
+        if across.abs() < reach && (along + across.abs() * 0.35).abs() < 1.3 {
+            crow = Some(mix([60.0, 60.0, 80.0], [16.0, 16.0, 24.0], across.abs() / reach));
+        }
+    }
+    let d = l.len();
+    if d < boss::CROW_R {
+        let eye = (l - dir * 1.0 - side * 0.9).len() < 0.4 || (l - dir * 1.0 + side * 0.9).len() < 0.4;
+        crow = Some(if eye { [235.0, 220.0, 120.0] } else { mix([70.0, 70.0, 95.0], [18.0, 18.0, 26.0], (d / boss::CROW_R + l.dot(V2::new(0.6, 0.8)) / boss::CROW_R) * 0.5 + 0.3) });
+    } else if along > 0.0 && along < boss::CROW_R + 1.6 && across.abs() < (boss::CROW_R + 1.6 - along) * 0.45 {
+        crow = Some(mix([210.0, 190.0, 110.0], [120.0, 100.0, 50.0], across.abs()));
+    }
+    if let Some(k) = crow {
+        c = if r.hurt > 0.0 && (r.hurt * 12.0) as i32 % 2 == 0 { mix(k, [255.0, 255.0, 255.0], 0.75) } else { k };
+    }
     c
 }
 
@@ -230,14 +333,8 @@ fn roof_top(game: &Game, roof: &RoofView, q: V2, ps: f32) -> Rgb {
 /// before a bolt, then the bolt itself; churning grey puffs you can see through; and
 /// its glowing core, which blinks white after a hit.
 fn storm_cloud(s: &Storm, roof: &RoofView, q: V2, ps: f32, time: f32, mut c: Rgb) -> Rgb {
-    let off = q - roof.centre;
     if let Some((a, left)) = s.charging {
-        let gap = (off.y.atan2(off.x) - a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-        if gap.abs() < boss::BOLT_SPAN && (off.len() - roof.ring).abs() < 1.8 {
-            // pulsing faster as the strike nears
-            let pulse = 0.5 + 0.5 * (time * (10.0 + 30.0 * (1.0 - left / boss::BOLT_WARN))).sin();
-            c = mix(c, [255.0, 225.0, 90.0], 0.35 + 0.5 * pulse);
-        }
+        c = ring_mark(roof, q, a, boss::BOLT_SPAN, left, boss::BOLT_WARN, time, [255.0, 225.0, 90.0], c);
     }
     // the cloud: the most each puff covers here, lit from the top left
     let mut cover = 0.0f32;
@@ -314,10 +411,50 @@ fn weathercock(w: &Weathercock, l: V2) -> Option<Rgb> {
     c
 }
 
+/// The Spider, in its own units (`l` from its middle, y down): a round abdomen with
+/// a red hourglass, a smaller head below with eyes (glowing before it spits), and
+/// eight jointed legs that creep as it moves.
+fn spider(g: &MiniBoss, l: V2) -> Option<Rgb> {
+    let seg = |a: V2, b: V2, r: f32| (l - physics::closest_on_segment(l, a, b)).len() < r;
+    let abdomen = l - V2::new(0.0, -0.7);
+    let head = l - V2::new(0.0, 1.5);
+    let ax = l.x.abs();
+    let eye = (V2::new(ax, head.y) - V2::new(0.45, 0.1)).len() < 0.32;
+    let mut c = if eye {
+        Some(if g.aiming() { [255.0, 220.0, 120.0] } else { [235.0, 50.0, 50.0] })
+    } else if (abdomen.x / 2.1).powi(2) + (abdomen.y / 1.8).powi(2) < 1.0 {
+        let hourglass = abdomen.x.abs() < 0.15 + abdomen.y.abs() * 0.45 && abdomen.y.abs() < 0.9;
+        Some(if hourglass { [235.0, 50.0, 40.0] } else { mix([170.0, 110.0, 195.0], [70.0, 40.0, 95.0], (abdomen.y + abdomen.x * 0.3 + 1.8) / 3.6) })
+    } else if head.len() < 1.0 {
+        Some([120.0, 80.0, 140.0])
+    } else {
+        None
+    };
+    if c.is_none() {
+        let creep = g.t * 6.0;
+        for side in [-1.0f32, 1.0] {
+            for k in 0..4 {
+                let kf = k as f32;
+                let wiggle = (creep + kf * 1.6 + side).sin() * 0.35;
+                let hip = V2::new(side * 1.2, -1.4 + kf * 0.75);
+                let knee = V2::new(side * 3.1, -2.6 + kf * 1.2 + wiggle);
+                let foot = V2::new(side * 4.3, -0.9 + kf * 1.3 + wiggle * 0.5);
+                if seg(hip, knee, 0.35) || seg(knee, foot, 0.3) {
+                    c = Some([120.0, 95.0, 135.0]);
+                }
+            }
+        }
+    }
+    if g.hurt > 0.0 && (g.hurt * 12.0) as i32 % 2 == 0 {
+        c = c.map(|c| mix(c, [255.0, 255.0, 255.0], 0.75));
+    }
+    c
+}
+
 /// The Gargoyle, in its own units (`l` from its centre, y down): stone head with
 /// horns and red eyes (glowing hot just before it spits), a squat body with claws,
 /// and scalloped wings beating up and down.
-fn gargoyle(g: &Gargoyle, l: V2) -> Option<Rgb> {
+fn gargoyle(g: &MiniBoss, l: V2) -> Option<Rgb> {
     let stone = |y: f32| mix([175.0, 170.0, 185.0], [80.0, 76.0, 92.0], (y + 3.0) / 6.0);
     let seg = |a: V2, b: V2, r: f32| (l - physics::closest_on_segment(l, a, b)).len() < r;
     let ax = l.x.abs();
@@ -385,8 +522,17 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
     let mut c = scenery(sc, p, ps, sky, ground);
     if let Some(g) = &game.boss {
         let l = p - g.p;
-        if l.x.abs() < boss::HALF.x + 0.5 && l.y.abs() < boss::HALF.y + 1.0 {
-            if let Some(gc) = gargoyle(g, l) {
+        let half = g.half();
+        if g.kind == MiniKind::Spider && l.x.abs() < ps * 0.5 + 0.1 && p.y > FIELD_TOP && l.y < -1.5 {
+            // its thread, up to the lintel
+            c = mix(c, [200.0, 200.0, 215.0], 0.6);
+        }
+        if l.x.abs() < half.x + 0.5 && l.y.abs() < half.y + 1.0 {
+            let drawn = match g.kind {
+                MiniKind::Gargoyle => gargoyle(g, l),
+                MiniKind::Spider => spider(g, l),
+            };
+            if let Some(gc) = drawn {
                 c = gc;
             }
         }
@@ -394,8 +540,15 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
     for shot in &game.shots {
         let d = (p - shot.p).len();
         if d < boss::SHOT_R + ps {
-            let fire = mix([255.0, 240.0, 150.0], [230.0, 60.0, 20.0], d / boss::SHOT_R);
-            c = mix(c, fire, (boss::SHOT_R - d) / ps + 0.5);
+            let blob = if shot.web {
+                // a tangle of silk: strands across a pale glob
+                let l = p - shot.p;
+                let strand = (l.x * 3.0).sin().abs() < 0.3 || (l.y * 3.0).sin().abs() < 0.3;
+                if strand { [240.0, 240.0, 250.0] } else { [150.0, 150.0, 165.0] }
+            } else {
+                mix([255.0, 240.0, 150.0], [230.0, 60.0, 20.0], d / boss::SHOT_R)
+            };
+            c = mix(c, blob, (boss::SHOT_R - d) / ps + 0.5);
         }
     }
     // the paddle: a brass bar with teal ends, lit from above along its normal
@@ -408,6 +561,10 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
         let along = (q - (a + b) * 0.5).dot((b - a).norm()).abs();
         let across = off.dot(n) / PADDLE_TH; // +1 top face, -1 underside
         let mut body = if along > game.paddle_half() - 2.0 { [40.0, 200.0, 185.0] } else { [235.0, 170.0, 55.0] };
+        if game.webbed > 0.0 && ((q - a).len() * 1.3 + across * 2.0).sin() > 0.3 {
+            // gummed up: silk wound round it
+            body = [225.0, 225.0, 235.0];
+        }
         if game.stun > 0.0 {
             // stunned: greyed, flickering
             let flick = if (game.time * 20.0) as i32 % 2 == 0 { 0.35 } else { 0.6 };
@@ -434,6 +591,7 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         return;
     }
     let ps = 1.0 / view.s;
+    let theme = &levels::tower(game.floor).theme;
     let roof = RoofView::new(game);
     let centre = roof.as_ref().map_or(V2::default(), |r| r.centre);
     let sc = Scene {
@@ -448,8 +606,8 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     for j in 0..h {
         for i in 0..w {
             let p = V2::new((i as f32 + 0.5 - view.ox) * ps, (j as f32 + 0.5 - view.oy) * ps);
-            let bg = sky(i as u32, j as u32, h as f32, game.time);
-            let below = if sc.tilt.is_some() { ground(i as u32, j as u32) } else { bg };
+            let bg = sky(theme, i as u32, j as u32, h as f32, game.time);
+            let below = if sc.tilt.is_some() { ground(theme, i as u32, j as u32) } else { bg };
             px[j * w + i] = shade(&sc, p, ps, bg, below);
         }
     }

@@ -221,8 +221,17 @@ fn summary(game: &Game) -> String {
             w.max,
             if w.gust > 0.0 { " gusting" } else { "" },
             if w.spinning > 0.0 { " spinning" } else { "" }
-        )) + &game.boss.as_ref().map_or(String::new(), |g| format!(
-            " gargoyle at {:.1},{:.1} hp {}/{} shots {}",
+        )) + &game.rook.as_ref().map_or(String::new(), |r| format!(
+            " rook at {:.1},{:.1} hp {}/{} twigs {} {:?}",
+            r.p.x,
+            r.p.y,
+            r.hp,
+            r.max,
+            r.twigs.iter().filter(|&&t| t).count(),
+            r.flight
+        )) + &game.webbed.gt(&0.0).then_some(" webbed").unwrap_or("") + &game.boss.as_ref().map_or(String::new(), |g| format!(
+            " {:?} at {:.1},{:.1} hp {}/{} shots {}",
+            g.kind,
             g.p.x,
             g.p.y,
             g.hp,
@@ -244,19 +253,22 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
     let bar = Style::default().bg(Color::Rgb(0, 0, 0)).fg(AMBER);
     let grey = bar.fg(Color::Rgb(170, 170, 170));
     let lives: String = "▬ ".repeat(game.lives as usize);
+    let (t, first) = levels::tower_of(game.floor);
+    let tower = &levels::TOWERS[t];
     let top = Line::from(vec![
         Span::styled(" BRICKSPIRE ", bar.add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" FLOOR {} {} ", game.floor + 1, game.floor_name), grey),
+        Span::styled(format!(" {} · FLOOR {} {} ", tower.name.to_uppercase(), game.floor + 1 - first, game.floor_name), grey),
         Span::styled(format!(" SCORE {:06} ", game.score), bar.add_modifier(Modifier::BOLD)),
         // (room for a boss's health instead, during a fight)
         Span::styled(if game.boss_left() { String::new() } else { format!(" BEST {best:06} ") }, grey),
         Span::styled(format!(" {lives}"), bar.fg(Color::Rgb(235, 170, 55))),
     ]);
     let mut top = top;
-    let boss_bar = match (&game.boss, &game.vane, &game.storm) {
-        (Some(g), _, _) => Some(("GARGOYLE", g.hp, g.max)),
-        (_, Some(w), _) => Some(("WEATHERCOCK", w.hp, w.max)),
-        (_, _, Some(s)) => Some(("STORM CLOUD", s.hp, s.max)),
+    let boss_bar = match (&game.boss, &game.vane, &game.storm, &game.rook) {
+        (Some(g), ..) => Some((if g.kind == levels::MiniKind::Spider { "SPIDER" } else { "GARGOYLE" }, g.hp, g.max)),
+        (_, Some(w), ..) => Some(("WEATHERCOCK", w.hp, w.max)),
+        (_, _, Some(s), _) => Some(("STORM CLOUD", s.hp, s.max)),
+        (.., Some(r)) => Some(("ROOK", r.hp, r.max)),
         _ => None,
     };
     if let Some((name, hp, max)) = boss_bar {
@@ -282,11 +294,12 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
     }
     let mid = area.y + area.height * 3 / 5;
     let msg = match game.state {
-        State::Serve { wait } if wait < 2.5 => Some(format!(" FLOOR {}: {} · space to launch ", game.floor + 1, game.floor_name)),
+        State::Serve { wait } if wait < 2.5 && game.floor == first => Some(format!(" {} · {} · space to launch ", tower.name.to_uppercase(), game.floor_name)),
+        State::Serve { wait } if wait < 2.5 => Some(format!(" FLOOR {}: {} · space to launch ", game.floor + 1 - first, game.floor_name)),
         State::Lost { .. } if game.lives == 0 => Some(" LAST BALL LOST ".to_string()),
         State::Lost { .. } => Some(" BALL LOST ".to_string()),
         State::Clear { .. } if game.arena.mode == Mode::Circle => Some(" TOWER CLIMBED · bonus 5000 ".to_string()),
-        State::Clear { .. } => Some(format!(" FLOOR {} CLEAR ", game.floor + 1)),
+        State::Clear { .. } => Some(format!(" FLOOR {} CLEAR ", game.floor + 1 - first)),
         State::Over => Some(format!(" GAME OVER · score {} · space to play again ", game.score)),
         _ => None,
     };
