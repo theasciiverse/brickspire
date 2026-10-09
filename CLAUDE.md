@@ -188,12 +188,12 @@ cargo run --release -- --path arc           # preview the mini-boss arc on the s
 cargo run --release -- --path circle        # preview the roof ring (a small test block)
 cargo run --release -- --floor 3            # start on floor 3
 cargo run --release -- --floor 5            # the Gargoyle's balcony (first mini-boss)
-cargo run --release -- --floor 6            # the Storm Cloud's roof (first tower boss)
-cargo run --release -- --floor 7            # the Ivy Tower (floors 7 to 12: spider on 11, rook on 12)
-cargo run --release -- --floor 13           # the Bell Tower (floors 13 to 18: the Jack on 17, the Great Bell on 18)
-cargo run --release -- --floor 19           # the Sea Tower (floors 19 to 24: the serpent on 23, the Weathercock on 24)
-cargo run --release -- --floor 25           # the Brickspire (floors 25 to 30: the apprentice on 29, the Mason on 30)
-cargo run --release -- --floor 6 --roof weathercock   # any roof boss on any roof: storm, rook, bell, weathercock, mason
+cargo run --release -- --floor 10           # the Storm Cloud's roof (first tower boss)
+cargo run --release -- --floor 11           # the Ivy Tower (floors 11 to 20: spider on 15, rook on 20)
+cargo run --release -- --floor 21           # the Bell Tower (floors 21 to 30: the Jack on 25, the Great Bell on 30)
+cargo run --release -- --floor 31           # the Sea Tower (floors 31 to 40: the serpent on 35, the Weathercock on 40)
+cargo run --release -- --floor 41           # the Brickspire (floors 41 to 50: the apprentice on 45, the Mason on 50)
+cargo run --release -- --floor 10 --roof weathercock   # any roof boss on any roof: storm, rook, bell, weathercock, mason
 cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
 cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5] [--map 4]   # headless frame (--map T: the map after this tower, T s in)
@@ -237,6 +237,13 @@ cargo test --release
 - `input.rs`: keys (exact or timing), mouse chase and click, gamepad (stick aims on the roof).
 
 ## Status
+
+Ten floors a tower (2026-10-09, overnight): four floors, the mini-boss's balcony,
+four more, the roof; 50 floors in all. Beating a mini-boss now turns the tower to
+the next floor like any other (the balcony curves away round the left edge); only
+the floor under the roof tilts up onto it. Steel takes 2 hits, one more every 12
+floors, at most 5. A test clears every plain floor with the autopilot (between
+about 40 s and 3 minutes each).
 
 Power-ups (2026-10-09, overnight): a broken brick lets a capsule fall one time in
 seven (one at a time, and not while several balls are in play); on the roof it
