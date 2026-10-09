@@ -346,7 +346,10 @@ fn map_labels(p: &map::Progress, area: Rect, buf: &mut Buffer) {
     let world = world_area(area);
     let h_px = world.height as f32 * 2.0;
     let aspect = world.width as f32 / h_px;
-    let fade = (p.t / 0.6).min(1.0);
+    if !p.settled() {
+        return;
+    }
+    let fade = p.light();
     let lit = |c: [u8; 3]| Color::Rgb((c[0] as f32 * fade) as u8, (c[1] as f32 * fade) as u8, (c[2] as f32 * fade) as u8);
     for (k, l) in map::SKYLINE.iter().enumerate() {
         let known = p.climbed(k) || k == p.next;
@@ -363,14 +366,17 @@ fn map_labels(p: &map::Progress, area: Rect, buf: &mut Buffer) {
         let r = Rect { x: world.x + col, y: row, width: w.min(world.width), height: 1 };
         Paragraph::new(name).style(Style::default().fg(fg).add_modifier(Modifier::BOLD)).render(r, buf);
     }
-    let title = if p.next <= p.from {
+    let title = if p.start {
+        " THE CLIMB BEGINS · FIVE TOWERS TO THE TOP ".to_string()
+    } else if p.next <= p.from {
         " EVERY TOWER CLIMBED · THE CLIMB BEGINS AGAIN ".to_string()
     } else {
         format!(" {} CLIMBED · TOWER BONUS 5000 ", map::SKYLINE[p.from].name.to_uppercase())
     };
     banner(&title, world.y + world.height / 8, area, buf);
-    if p.ready() {
-        banner(&format!(" NEXT: {} · space to climb ", map::SKYLINE[p.next].name.to_uppercase()), world.y + world.height / 8 + 2, area, buf);
+    if p.ready() && p.leave.is_none() {
+        let word = if p.start { "FIRST" } else { "NEXT" };
+        banner(&format!(" {word}: {} · space to climb ", map::SKYLINE[p.next].name.to_uppercase()), world.y + world.height / 8 + 2, area, buf);
     }
 }
 
@@ -392,6 +398,13 @@ fn snapshot(out: &str) -> io::Result<()> {
         game.to_map();
         for _ in 0..(t / STEP) as usize {
             game.step(game::Steer::Move(0.0), false);
+        }
+        // --leave L: then go on, and stop L seconds into the swoop
+        if let Some(l) = arg("--leave").and_then(|s| s.parse::<f32>().ok()) {
+            game.step(game::Steer::Move(0.0), true);
+            for _ in 0..(l / STEP) as usize {
+                game.step(game::Steer::Move(0.0), false);
+            }
         }
     }
     // --turn F: clear the floor and stop F of the way through the tower's turn

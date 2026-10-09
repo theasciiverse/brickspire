@@ -247,8 +247,9 @@ pub enum State {
     /// Every breakable brick is gone: `t` seconds since, holding for `CLEAR_HOLD`
     /// and then turning the tower for `TURN_TIME`.
     Clear { t: f32 },
-    /// A tower climbed: the map, `t` seconds in, before the next tower.
-    Map { t: f32 },
+    /// A tower climbed (or a new game): the map, `t` seconds in, before the next
+    /// tower; `leave` seconds since going on, while the camera swoops in.
+    Map { t: f32, leave: Option<f32> },
     Over,
 }
 
@@ -317,6 +318,8 @@ pub struct Game {
     pub bolts: Vec<Bolt>,
     chisel_reload: f32,
     pub caught: Option<(Power, f32)>,
+    /// The map showing is the one at the start of a game.
+    pub opening: bool,
     /// A paddle path forced for every floor (`--path`), instead of each floor's own.
     forced: Option<Mode>,
     seed: u32,
@@ -449,10 +452,16 @@ impl Game {
             bolts: Vec::new(),
             chisel_reload: 0.0,
             caught: None,
+            opening: false,
             forced,
             seed: 0x9e37_79b9,
         };
         g.load_floor(0);
+        if forced.is_none() {
+            // a new game opens on the map: the five towers, the climb ahead
+            g.opening = true;
+            g.state = State::Map { t: 0.0, leave: None };
+        }
         g
     }
 
@@ -470,6 +479,7 @@ impl Game {
     }
 
     pub fn load_floor(&mut self, n: usize) {
+        self.opening = false;
         let def = self.floor_def(n);
         self.floor = n;
         self.floor_name = def.name;
@@ -707,14 +717,23 @@ impl Game {
         });
         match self.state {
             State::Over => return,
-            State::Map { t } => {
+            State::Map { t, leave } => {
                 let t = t + STEP;
-                let p = self.map();
-                if (fire && p.is_some_and(|p| p.ready())) || t >= map::MAP_TIME {
-                    info!("on to the next tower, floor {}", self.floor + 2);
-                    self.load_floor(self.floor + 1);
+                let ready = self.map().is_some_and(|p| p.ready());
+                let leave = match leave {
+                    Some(l) => Some(l + STEP),
+                    None if (fire && ready) || t >= map::MAP_TIME => {
+                        info!("map: going on");
+                        Some(0.0)
+                    }
+                    None => None,
+                };
+                if leave.is_some_and(|l| l >= map::LEAVE) {
+                    let next = if self.opening { self.floor } else { self.floor + 1 };
+                    info!("on to the next tower, floor {}", next + 1);
+                    self.load_floor(next);
                 } else {
-                    self.state = State::Map { t };
+                    self.state = State::Map { t, leave };
                 }
                 return;
             }
@@ -739,7 +758,7 @@ impl Game {
                 self.paddle.s += (mid - self.paddle.s) * (STEP * 3.0).min(1.0);
                 if t >= self.clear_time() && self.arena.mode == Mode::Circle && self.forced.is_none() {
                     info!("to the map");
-                    self.state = State::Map { t: 0.0 };
+                    self.state = State::Map { t: 0.0, leave: None };
                 } else if t >= self.clear_time() {
                     info!("on to floor {}", self.floor + 2);
                     self.load_floor(self.floor + 1);
@@ -1873,7 +1892,8 @@ impl Game {
     /// The map, while it shows.
     pub fn map(&self) -> Option<map::Progress> {
         match self.state {
-            State::Map { t } => Some(map::progress_after(self.floor, t, self.time)),
+            State::Map { t, leave } if self.opening => Some(map::opening(t, self.time, leave)),
+            State::Map { t, leave } => Some(map::progress_after(self.floor, t, self.time, leave)),
             _ => None,
         }
     }
@@ -1884,7 +1904,8 @@ impl Game {
         let (t, first) = levels::tower_of(self.floor);
         self.floor = first + levels::TOWERS[t].floors.len() - 1;
         self.balls.clear();
-        self.state = State::Map { t: 0.0 };
+        self.opening = false;
+        self.state = State::Map { t: 0.0, leave: None };
     }
 
     /// A served ball is drawn on the paddle before it exists.

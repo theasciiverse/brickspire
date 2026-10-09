@@ -1002,7 +1002,7 @@ pub fn map_colour(p: &map::Progress, look: map::Look, i: u32, j: u32) -> Rgb {
         Look::Trail => [240.0, 220.0, 160.0],
         Look::Walker => [255.0, 245.0, 210.0],
     };
-    scale(c, (p.t / 0.6).min(1.0))
+    scale(c, p.light())
 }
 
 /// The map between towers, filling the area.

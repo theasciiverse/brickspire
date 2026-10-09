@@ -3,6 +3,11 @@
 //! named; the rest are dark silhouettes, so their secrets stay hidden. A dotted
 //! trail draws itself across the hills from the tower just climbed to the next.
 //!
+//! The camera comes with it: the map opens close on the top of the tower just
+//! climbed and pulls back to the whole landscape; going on, it swoops in on the next
+//! tower and fades. A new game opens on the map too, the whole landscape and no
+//! tower climbed yet.
+//!
 //! Shared by both renderers: `look` says what lies at a screen point, each renderer
 //! colours or draws it. Points are in screen heights: `y` 0 at the top to 1 at the
 //! bottom, `x` 0 to `aspect` (the screen's width over its height, in square pixels).
@@ -41,9 +46,14 @@ pub const SKYLINE: [Landmark; 5] = [
 
 /// Seconds before the trail starts, how long it takes to draw, and how long the map
 /// stays before going on by itself (space goes on once the trail is drawn).
-pub const TRAIL_START: f32 = 0.8;
+pub const TRAIL_START: f32 = 1.8;
 pub const TRAIL_TIME: f32 = 2.2;
-pub const MAP_TIME: f32 = 9.0;
+pub const MAP_TIME: f32 = 10.0;
+/// How long the camera takes to pull back from the climbed tower's top, and to
+/// swoop in on the next tower when going on; how close it starts and ends.
+pub const ARRIVE: f32 = 1.6;
+pub const LEAVE: f32 = 1.1;
+const CLOSE: f32 = 0.12;
 
 /// Where on the map the climb is.
 #[derive(Clone, Copy, Debug)]
@@ -54,21 +64,54 @@ pub struct Progress {
     /// Seconds on the map, and the game's clock (for things that move).
     pub t: f32,
     pub time: f32,
+    /// The start of a game: nothing climbed yet, no trail.
+    pub start: bool,
+    /// Seconds since going on to the next tower, while the camera swoops in.
+    pub leave: Option<f32>,
 }
 
 impl Progress {
     pub fn climbed(&self, k: usize) -> bool {
         // round again after the last tower: every tower has its flag
-        k <= self.from || self.next <= self.from
+        !self.start && (k <= self.from || self.next <= self.from)
     }
 
     /// How much of the trail is drawn, 0 to 1.
     pub fn trail(&self) -> f32 {
+        if self.start {
+            return 0.0;
+        }
         ((self.t - TRAIL_START) / TRAIL_TIME).clamp(0.0, 1.0)
     }
 
     pub fn ready(&self) -> bool {
-        self.trail() >= 1.0
+        if self.start { self.t > 0.8 } else { self.trail() >= 1.0 }
+    }
+
+    /// The camera: 0 close on a tower, 1 the whole landscape; and the tower it is
+    /// close on (and where on it: 0 its foot, 1 its top).
+    pub fn pull(&self) -> (f32, usize, f32) {
+        let ease = |k: f32| {
+            let k = k.clamp(0.0, 1.0);
+            k * k * (3.0 - 2.0 * k)
+        };
+        match self.leave {
+            Some(l) => (1.0 - ease(l / LEAVE), self.next, 0.35),
+            None if self.start => (1.0, self.next, 0.35),
+            None => (ease(self.t / ARRIVE), self.from, 0.85),
+        }
+    }
+
+    /// Has the camera settled on the whole landscape?
+    pub fn settled(&self) -> bool {
+        self.pull().0 >= 1.0
+    }
+
+    /// How bright: fading in at first and out while leaving.
+    pub fn light(&self) -> f32 {
+        let fade_in = if self.start { (self.t / 0.6).min(1.0) } else { (self.t / 0.4).min(1.0) };
+        let fade_out = self.leave.map_or(1.0, |l| (1.0 - (l - LEAVE * 0.55) / (LEAVE * 0.45)).clamp(0.0, 1.0));
+        fade_in * fade_out
     }
 }
 
@@ -134,11 +177,33 @@ pub fn trail_point(a: usize, b: usize, k: f32, aspect: f32) -> (f32, f32) {
     (x * aspect, ground(x) + 0.045 + 0.02 * (k * std::f32::consts::PI).sin())
 }
 
-/// What lies at screen point (`x`, `y`); `ps` is a pixel's size.
+/// What lies at screen point (`x`, `y`); `ps` is a pixel's size. The camera may be
+/// close on a tower: the point is moved to where it lands in the landscape first.
 pub fn look(p: &Progress, x: f32, y: f32, aspect: f32, ps: f32) -> Look {
+    let (k, tower, up) = p.pull();
+    if k < 1.0 {
+        let (tx, base, _, _, top) = place(tower, aspect);
+        let focus = (tx, base + (top - base) * up);
+        let screen = (aspect / 2.0, 0.5);
+        let z = CLOSE + (1.0 - CLOSE) * k;
+        let f = (focus.0 + (screen.0 - focus.0) * k, focus.1 + (screen.1 - focus.1) * k);
+        return look_at(p, f.0 + (x - screen.0) * z, f.1 + (y - screen.1) * z, aspect, ps * z);
+    }
+    look_at(p, x, y, aspect, ps)
+}
+
+fn look_at(p: &Progress, x: f32, y: f32, aspect: f32, ps: f32) -> Look {
     // the trail and its walker, in front of everything
     let (a, b) = (p.from, p.next);
     let drawn = p.trail();
+    if p.start {
+        // the climber waits at the first tower's foot
+        let (hx, hy) = trail_point(p.next, p.next, 0.0, aspect);
+        let bob = (p.time * 3.0).sin().abs() * 0.008;
+        if ((x - hx).powi(2) + (y - hy + bob).powi(2)).sqrt() < 0.014 {
+            return Look::Walker;
+        }
+    }
     if drawn > 0.0 {
         let (hx, hy) = trail_point(a, b, drawn, aspect);
         if ((x - hx).powi(2) + (y - hy).powi(2)).sqrt() < 0.014 {
@@ -244,10 +309,15 @@ fn tower(p: &Progress, k: usize, x: f32, y: f32, aspect: f32, ps: f32) -> Option
 }
 
 /// Where the map stands after floor `n` (the roof just beaten).
-pub fn progress_after(n: usize, t: f32, time: f32) -> Progress {
+pub fn progress_after(n: usize, t: f32, time: f32, leave: Option<f32>) -> Progress {
     let from = levels::tower_of(n).0;
     let next = levels::tower_of(n + 1).0;
-    Progress { from, next, t, time }
+    Progress { from, next, t, time, start: false, leave }
+}
+
+/// The map at the start of a game: nothing climbed, the first tower next.
+pub fn opening(t: f32, time: f32, leave: Option<f32>) -> Progress {
+    Progress { from: 0, next: 0, t, time, start: true, leave }
 }
 
 #[cfg(test)]
@@ -257,7 +327,7 @@ mod tests {
     #[test]
     fn towers_stand_on_the_hills_and_the_trail_joins_them() {
         let aspect = 2.5;
-        let p = Progress { from: 0, next: 1, t: 10.0, time: 0.0 };
+        let p = Progress { from: 0, next: 1, t: 10.0, time: 0.0, start: false, leave: None };
         for k in 0..SKYLINE.len() {
             let (x, base, _, h, top) = place(k, aspect);
             assert!(top > 0.02, "tower {k} runs off the top");
@@ -267,5 +337,14 @@ mod tests {
         // the walker ends at the next tower's foot
         let (x, y) = trail_point(0, 1, 1.0, aspect);
         assert_eq!(look(&p, x, y, aspect, 0.004), Look::Walker);
+        // at first the camera is close on the climbed tower's top: its middle is that
+        let close = Progress { t: 0.0, ..p };
+        assert!(matches!(look(&close, aspect / 2.0, 0.5, aspect, 0.004), Look::Tower { k: 0, .. } | Look::Pole | Look::Flag));
+        assert!(!close.settled() && p.settled());
+        // a new game: nothing climbed, the walker at the first tower
+        let start = opening(1.0, 0.0, None);
+        assert!(!start.climbed(0) && start.ready());
+        let (x, y) = trail_point(0, 0, 0.0, aspect);
+        assert_eq!(look(&start, x, y, aspect, 0.004), Look::Walker);
     }
 }

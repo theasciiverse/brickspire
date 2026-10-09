@@ -196,7 +196,7 @@ cargo run --release -- --floor 41           # the Brickspire (floors 41 to 50: t
 cargo run --release -- --floor 10 --roof weathercock   # any roof boss on any roof: storm, rook, bell, weathercock, mason
 cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
-cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5] [--map 4]   # headless frame (--map T: the map after this tower, T s in)
+cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc] [--turn 0.5] [--map 4 [--leave 0.5]]   # headless frame (--map T: the map after this tower, T s in; --leave L: L s into going on)
 cargo test --release
 ```
 
@@ -318,8 +318,12 @@ bell, the Sea Tower as a striped lighthouse with its lamp, the Brickspire's need
 Climbed towers fly a flag and have lit windows, the next stands lit with its name
 (pulsing gently), the rest are dark silhouettes named `?`. A dotted trail draws
 itself from the tower just climbed to the next over 2.2 s, a walker at its head;
-then space goes on (or after 9 s). Not yet: the map at the start of a game, a camera
-move from the roof up into the map and down into the next tower.
+then space goes on (or after 10 s). Since overnight the camera moves with it: the
+map opens close on the climbed tower's top (its new flag) and pulls back over
+1.6 s to the whole landscape (the names show once it has settled); going on, it
+swoops in on the next tower and fades (1.1 s). A new game opens on the map too:
+nothing climbed, the Old Keep lit with the climber waiting at its foot, "THE CLIMB
+BEGINS", then "FIRST: THE OLD KEEP". (`--snapshot ... --map T [--leave L]`.)
 
 The Ivy Tower: four floors with vine bricks (green, leafy, a stem along the middle):
 every 1.4 s each vine steps one cell along its row, gliding over 0.35 s, and turns
