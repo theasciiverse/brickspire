@@ -136,8 +136,11 @@ terminal cells being taller than they are wide, so that part is ours to solve.
   goes at the paddle (marks, stuns, things to dodge), not at the ball's flight. The
   Weathercock breaks this (gusts bend the ball, the arrow bats it), which is why it
   was too hard as the first roof boss and moved to tower 4.
-- Power-up capsules follow the classic set (wider paddle, catch, laser, slow, split ball, extra
-  life, skip to the next floor) under our own names.
+- Power-up capsules follow the classic set under our own names (built 2026-10-09):
+  Plank (P, a longer paddle), Mortar (M, catch: the ball sticks, space lets it go),
+  Chisel (C, laser: space fires a pair of chisels), Hourglass (H, slow), Flock (F,
+  three balls), Spare (+, extra life), Stair (S, on to the next floor; not on boss
+  floors).
 - Bricks: ordinary, hard (several hits), indestructible, plus one new type per tower
   (sliding vine, regenerating clockwork, ice).
 
@@ -217,6 +220,8 @@ cargo test --release
   the Great Bell (swinging, tolling rings of sound loud along its swing, lurching),
   the Mason (working in his fort of bricks, putting them back, lobbing bricks)
   and the Weathercock (turning, gusts, spin-ups, hits).
+- `power.rs`: the power-up capsules: kinds, names, colours, letters, how often each
+  falls. Their rules (falling, catching, mortar, chisels) are in `game.rs`.
 - `roof.rs`: the camera tilting up onto the roof, shared by both renderers (what a
   screen point sees: roof top, parapet, tower side or beyond), and the roof's contents.
 - `map.rs`: the map between towers, shared by both renderers: the five towers on a
@@ -232,6 +237,18 @@ cargo test --release
 - `input.rs`: keys (exact or timing), mouse chase and click, gamepad (stick aims on the roof).
 
 ## Status
+
+Power-ups (2026-10-09, overnight): a broken brick lets a capsule fall one time in
+seven (one at a time, and not while several balls are in play); on the roof it
+drifts outward to the ring instead. A pill in its colour with its letter (the
+letter sits in the cell at its middle in pixel mode, `(M)` in pipes); catching one
+says what it does for 2 s, and the lasting one shows in the HUD. Plank, Mortar
+and Chisel last until another of them is caught or a life is lost; the paddle
+shows them (mortar along its top, red chisel ends). Mortar holds a ball where it
+landed (it rides with the paddle) until space, or 3 s; Chisel fires two chisels
+up from the paddle's ends (along its normal, so inward on the roof), every 0.3 s
+at most, each breaking the first brick it meets; a boss stops them unhurt (only
+the ball hurts bosses). Flock turns every ball into three.
 
 The Brickspire (2026-10-09, overnight): above the clouds, a full night sky, violet
 stone, a sea of cloud far below the roof. Its floors mix every brick so far (vine,

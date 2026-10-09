@@ -7,6 +7,7 @@ use crate::boss::{self, Bell, Flight, Hurt, Mason, MiniBoss, MiniKind, Rook, Sho
 use crate::levels::{self, Floor, FloorKind, RoofBoss};
 use crate::map;
 use crate::physics::{self, Hit, Path, V2};
+use crate::power::{self, Bolt, Capsule, Power};
 use crate::roof;
 use log::info;
 use std::f32::consts::PI;
@@ -219,6 +220,14 @@ const VINE_SLIDE: f32 = 0.35;
 pub struct Ball {
     pub p: V2,
     pub v: V2,
+    /// Caught in mortar: where along the paddle it sticks, and for how long.
+    pub held: Option<(f32, f32)>,
+}
+
+impl Ball {
+    pub fn new(p: V2, v: V2) -> Ball {
+        Ball { p, v, held: None }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -300,6 +309,14 @@ pub struct Game {
     pub iced: f32,
     /// How long the paddle has left chipped short by the apprentice's bricks.
     pub chipped: f32,
+    /// Falling power-up capsules, the lasting power in hand (plank, mortar or
+    /// chisel), chisels in flight and the seconds until the next volley, and what
+    /// was just caught (for a moment's message).
+    pub capsules: Vec<Capsule>,
+    pub power: Option<Power>,
+    pub bolts: Vec<Bolt>,
+    chisel_reload: f32,
+    pub caught: Option<(Power, f32)>,
     /// A paddle path forced for every floor (`--path`), instead of each floor's own.
     forced: Option<Mode>,
     seed: u32,
@@ -427,6 +444,11 @@ impl Game {
             webbed: 0.0,
             iced: 0.0,
             chipped: 0.0,
+            capsules: Vec::new(),
+            power: None,
+            bolts: Vec::new(),
+            chisel_reload: 0.0,
+            caught: None,
             forced,
             seed: 0x9e37_79b9,
         };
@@ -494,6 +516,12 @@ impl Game {
         self.webbed = 0.0;
         self.iced = 0.0;
         self.chipped = 0.0;
+        self.capsules.clear();
+        self.bolts.clear();
+        if self.power.is_some() {
+            info!("power {:?} lost", self.power);
+        }
+        self.power = None;
         self.speed = self.speed_start();
         if self.arena.path.wraps() {
             self.paddle.s = 0.0;
@@ -507,6 +535,7 @@ impl Game {
     /// Half the paddle's length: longer on the roof.
     pub fn paddle_half(&self) -> f32 {
         let half = if self.arena.mode == Mode::Circle { ROOF_PADDLE_HALF } else { PADDLE_HALF };
+        let half = if self.power == Some(Power::Plank) { half * power::PLANK_SHARE } else { half };
         if self.chipped > 0.0 { half * CHIP_SHARE } else { half }
     }
 
@@ -728,6 +757,7 @@ impl Game {
         self.webbed = (self.webbed - STEP).max(0.0);
         self.iced = (self.iced - STEP).max(0.0);
         self.chipped = (self.chipped - STEP).max(0.0);
+        self.caught = self.caught.map(|(p, t)| (p, t - STEP)).filter(|&(_, t)| t > 0.0);
         self.move_paddle(steer);
         self.update_boss();
         if let State::Serve { wait } = self.state {
@@ -739,8 +769,17 @@ impl Game {
             }
             return;
         }
+        self.use_power(fire);
         for i in 0..self.balls.len() {
-            self.move_ball(i);
+            if self.balls[i].held.is_none() {
+                self.move_ball(i);
+            }
+        }
+        self.update_capsules();
+        self.update_bolts();
+        if self.state != State::Play {
+            // a stair was caught
+            return;
         }
         let before = self.balls.len();
         self.balls.retain(|b| !self.arena.lost(b.p));
@@ -781,7 +820,7 @@ impl Game {
     fn launch(&mut self) {
         let path = &self.arena.path;
         let dir = path.normal(self.paddle.s).rotate(0.35);
-        self.balls.push(Ball { p: self.held_ball(), v: dir * self.speed });
+        self.balls.push(Ball::new(self.held_ball(), dir * self.speed));
         self.state = State::Play;
         info!("launch at s {:.1}", self.paddle.s);
     }
@@ -815,9 +854,16 @@ impl Game {
             self.paddle.vel = 0.0;
         }
         self.paddle.s = s;
-        // a paddle moving into a ball pushes it out and bats it
+        // a paddle moving into a ball pushes it out and bats it; balls caught in mortar
+        // ride along with it
         let (a, b, n) = self.paddle_segment();
+        let (mid, t) = ((a + b) * 0.5, (b - a).norm());
         for i in 0..self.balls.len() {
+            if let Some((u, _)) = self.balls[i].held {
+                let u = u.clamp(-self.paddle_half(), self.paddle_half());
+                self.balls[i].p = mid + t * u + n * (PADDLE_TH + BALL_R + 0.05);
+                continue;
+            }
             let p = self.balls[i].p;
             let q = physics::closest_on_segment(p, a, b);
             let off = p - q;
@@ -840,6 +886,145 @@ impl Game {
         let p = self.balls[i].p;
         let u = ((physics::closest_on_segment(p, a, b) - mid).dot(t) / self.paddle_half()).clamp(-1.0, 1.0);
         self.balls[i].v = n.rotate(u * MAX_DEFLECT) * self.speed;
+        if self.power == Some(Power::Mortar) && self.balls[i].held.is_none() {
+            // stuck where it landed, until fire lets it go
+            self.balls[i].held = Some((u * self.paddle_half(), 0.0));
+            self.balls[i].p = mid + t * (u * self.paddle_half()) + n * (PADDLE_TH + BALL_R + 0.05);
+        }
+    }
+
+    /// Let go of every ball caught in mortar, each off the paddle as if it had just
+    /// struck it there.
+    fn release(&mut self) {
+        for i in 0..self.balls.len() {
+            if self.balls[i].held.take().is_some() {
+                let mortar = self.power.take();
+                self.bat(i);
+                self.power = mortar;
+            }
+        }
+    }
+
+    /// Fire lets go of caught balls, or else shoots the chisels; caught balls let go
+    /// by themselves after a while.
+    fn use_power(&mut self, fire: bool) {
+        self.chisel_reload = (self.chisel_reload - STEP).max(0.0);
+        let mut overdue = false;
+        for b in self.balls.iter_mut() {
+            if let Some((u, t)) = b.held {
+                b.held = Some((u, t + STEP));
+                overdue |= t + STEP > power::MORTAR_HOLD;
+            }
+        }
+        let holding = self.balls.iter().any(|b| b.held.is_some());
+        if holding && (fire || overdue) {
+            self.release();
+        } else if fire && self.power == Some(Power::Chisel) && self.chisel_reload == 0.0 {
+            self.chisel_reload = power::CHISEL_EVERY;
+            let (a, b, n) = self.paddle_segment();
+            let t = (b - a).norm();
+            for end in [a + t * 1.2, b - t * 1.2] {
+                self.bolts.push(Bolt { p: end + n * PADDLE_TH, v: n * power::CHISEL_SPEED });
+            }
+        }
+    }
+
+    /// Capsules fall (on the roof, drift outward); one that reaches the paddle is
+    /// caught.
+    fn update_capsules(&mut self) {
+        let (a, b, _) = self.paddle_segment();
+        let mut caught = Vec::new();
+        let arena = &self.arena;
+        self.capsules.retain_mut(|c| {
+            c.p += c.v * STEP;
+            if (c.p - physics::closest_on_segment(c.p, a, b)).len() < PADDLE_TH + power::CAP_HALF.y {
+                caught.push(c.kind);
+                return false;
+            }
+            match arena.path {
+                Path::Circle { c: centre, .. } => (c.p - centre).len() < roof::RIM,
+                _ => c.p.y < WORLD_H + 2.0,
+            }
+        });
+        for kind in caught {
+            self.catch(kind);
+        }
+    }
+
+    fn catch(&mut self, kind: Power) {
+        info!("caught {kind:?}");
+        self.score += 100;
+        self.caught = Some((kind, 2.0));
+        let at = self.arena.path.point(self.paddle.s);
+        let rgb = kind.rgb();
+        self.burst(at, V2::new(4.0, 1.0), 12, rgb, 16.0);
+        if kind.lasts() {
+            if self.power == Some(Power::Mortar) && kind != Power::Mortar {
+                self.release();
+            }
+            self.power = Some(kind);
+        }
+        match kind {
+            Power::Hourglass => self.speed = self.speed_start(),
+            Power::Flock => {
+                let mut more = Vec::new();
+                for b in self.balls.iter().filter(|b| b.held.is_none()) {
+                    for turn in [-0.45, 0.45] {
+                        more.push(Ball::new(b.p, b.v.rotate(turn)));
+                    }
+                }
+                self.balls.extend(more.into_iter().take(6));
+            }
+            Power::Spare => self.lives = (self.lives + 1).min(9),
+            Power::Stair => {
+                info!("a stair opens: floor {} skipped", self.floor + 1);
+                self.score += 1000;
+                for b in self.bricks.iter_mut() {
+                    if b.is_some_and(|b| b.kind != Kind::Gilt) {
+                        *b = None;
+                    }
+                }
+                self.clear_floor(0.0);
+            }
+            _ => {}
+        }
+    }
+
+    /// Chisels fly from the paddle and break the first brick they meet; a boss or
+    /// the far wall stops them.
+    fn update_bolts(&mut self) {
+        let mut hits = Vec::new();
+        let mut bolts = std::mem::take(&mut self.bolts);
+        bolts.retain_mut(|bolt| {
+            bolt.p += bolt.v * STEP;
+            if let Some((i, ..)) = self.brick_at(bolt.p) {
+                hits.push(i);
+                return false;
+            }
+            !self.stops_bolt(bolt.p)
+        });
+        self.bolts = bolts;
+        for i in hits {
+            self.hit_brick(i);
+        }
+    }
+
+    /// Does something stop a chisel at `p`: the field's edge, the roof's rim, or a
+    /// boss (which it can't hurt; only the ball can).
+    fn stops_bolt(&self, p: V2) -> bool {
+        let gone = match self.arena.path {
+            Path::Circle { c, .. } => (p - c).len() > roof::RIM - roof::PARAPET,
+            _ => p.y < FIELD_TOP || p.y > WORLD_H,
+        };
+        let near = |at: V2, r: f32| (p - at).len() < r;
+        gone || self.boss.as_ref().is_some_and(|g| {
+            let (min, max) = g.bounds();
+            p.x > min.x && p.x < max.x && p.y > min.y && p.y < max.y
+        }) || self.storm.as_ref().is_some_and(|s| near(s.centre, boss::CORE_R))
+            || self.rook.as_ref().is_some_and(|r| near(r.p, boss::CROW_R) || (p - r.nest).len() > boss::NEST_R - boss::TWIG_TH && (p - r.nest).len() < boss::NEST_R + boss::TWIG_TH)
+            || self.bell.as_ref().is_some_and(|b| near(b.p, boss::BELL_R))
+            || self.mason.as_ref().is_some_and(|m| near(m.p, boss::MASON_R))
+            || self.vane.as_ref().is_some_and(|w| near(w.centre, boss::ROOSTER_R))
     }
 
     fn move_ball(&mut self, i: usize) {
@@ -1046,6 +1231,7 @@ impl Game {
             _ => 50 * (self.floor as u32 + 1),
         };
         let (min, max) = self.brick_box(i);
+        self.maybe_drop((min + max) * 0.5);
         let rgb = brick_rgb(brick.kind);
         for _ in 0..7 {
             let p = V2::new(min.x + self.rand() * (max.x - min.x), min.y + self.rand() * (max.y - min.y));
@@ -1054,6 +1240,21 @@ impl Game {
             let life = 0.4 + self.rand() * 0.5;
             self.particles.push(Particle { p, v, life, rgb });
         }
+    }
+
+    /// Now and then a broken brick lets a capsule fall: one at a time, and not while
+    /// several balls are in play.
+    fn maybe_drop(&mut self, at: V2) {
+        if !self.capsules.is_empty() || self.balls.len() > 1 || self.state != State::Play || self.rand() >= power::DROP_CHANCE {
+            return;
+        }
+        let kind = Power::pick(self.rand(), !self.boss_floor);
+        let v = match self.arena.path {
+            Path::Circle { c, .. } => (at - c).norm() * (power::FALL * 0.75),
+            _ => V2::new(0.0, power::FALL),
+        };
+        self.capsules.push(Capsule { p: at, v, kind });
+        info!("a {kind:?} capsule falls");
     }
 
     fn burst(&mut self, at: V2, spread: V2, count: usize, rgb: [u8; 3], speed: f32) {
@@ -1624,6 +1825,8 @@ impl Game {
     /// next floor simply loads (the arc and roof previews).
     fn clear_floor(&mut self, t: f32) {
         self.ghosts.clear();
+        self.capsules.clear();
+        self.bolts.clear();
         self.balls.clear();
         self.shots.clear();
         self.state = State::Clear { t };
@@ -1742,7 +1945,7 @@ mod tests {
         g.state = State::Play;
         // absurdly fast, straight up a column of bricks
         let x = g.origin.x + BRICK_W * 6.5;
-        g.balls = vec![Ball { p: V2::new(x, 46.0), v: V2::new(0.0, -6000.0) }];
+        g.balls = vec![Ball::new(V2::new(x, 46.0), V2::new(0.0, -6000.0))];
         g.speed = 6000.0;
         let before = g.left();
         g.move_ball(0);
@@ -1760,7 +1963,7 @@ mod tests {
             let t = (b - a).norm();
             for (u, want) in [(0.0, 0.0), (1.0, MAX_DEFLECT), (-0.5, -MAX_DEFLECT / 2.0)] {
                 let at = mid + t * (u * g.paddle_half()) + n * 10.0;
-                g.balls = vec![Ball { p: at, v: -n * g.speed }];
+                g.balls = vec![Ball::new(at, -n * g.speed)];
                 for _ in 0..300 {
                     g.move_ball(0);
                     if g.balls[0].v.dot(n) > 0.0 {
@@ -1938,7 +2141,7 @@ mod tests {
         let (min, max) = g.brick_box(i);
         // up into its underside at 45 degrees
         let start = V2::new((min.x + max.x) / 2.0 - 4.0, max.y + 4.0);
-        g.balls = vec![Ball { p: start, v: V2::new(1.0, -1.0).norm() * g.speed }];
+        g.balls = vec![Ball::new(start, V2::new(1.0, -1.0).norm() * g.speed)];
         for _ in 0..60 {
             g.move_ball(0);
             if g.balls[0].v.y > 0.0 {
@@ -1956,7 +2159,7 @@ mod tests {
     fn an_iced_paddle_slides() {
         let mut g = Game::new(Some(Mode::Line));
         g.state = State::Play;
-        g.balls = vec![Ball { p: V2::new(50.0, 20.0), v: V2::new(0.0, 0.0) }];
+        g.balls = vec![Ball::new(V2::new(50.0, 20.0), V2::new(0.0, 0.0))];
         g.iced = 2.0;
         g.move_paddle(Steer::Move(1.0));
         assert!(g.paddle.vel > 0.0 && g.paddle.vel < PADDLE_SPEED * 0.1, "{}", g.paddle.vel);
@@ -1971,13 +2174,89 @@ mod tests {
         assert_eq!(g.paddle.vel, 0.0);
     }
 
+    /// A plain floor in play, one ball well clear of the paddle, and a capsule of
+    /// `kind` dropped right onto the paddle.
+    fn catching(kind: Power) -> Game {
+        let mut g = Game::new(Some(Mode::Line));
+        g.state = State::Play;
+        g.balls = vec![Ball::new(V2::new(50.0, 30.0), V2::new(0.3, -1.0).norm() * g.speed)];
+        let at = g.arena.path.point(g.paddle.s);
+        g.capsules = vec![Capsule { p: at - V2::new(0.0, 3.0), v: V2::new(0.0, power::FALL), kind }];
+        for _ in 0..60 {
+            g.step(Steer::Move(0.0), false);
+        }
+        assert!(g.capsules.is_empty(), "{kind:?} not caught");
+        g
+    }
+
+    #[test]
+    fn powers_do_what_they_say() {
+        let g = catching(Power::Plank);
+        assert_eq!(g.power, Some(Power::Plank));
+        assert!((g.paddle_half() - PADDLE_HALF * power::PLANK_SHARE).abs() < 1e-4);
+
+        let lives = Game::new(Some(Mode::Line)).lives;
+        assert_eq!(catching(Power::Spare).lives, lives + 1);
+        assert_eq!(catching(Power::Flock).balls.len(), 3);
+        assert!(matches!(catching(Power::Stair).state, State::Clear { .. }));
+
+        // mortar: the ball comes down and sticks, then fire lets it go
+        let mut g = catching(Power::Mortar);
+        g.balls = vec![Ball::new(g.arena.path.point(g.paddle.s) - V2::new(1.0, 8.0), V2::new(0.0, g.speed))];
+        for _ in 0..120 {
+            g.step(Steer::Move(0.0), false);
+        }
+        assert!(g.balls[0].held.is_some(), "not caught in mortar");
+        let held_at = g.balls[0].p;
+        g.step(Steer::Move(1.0), false);
+        assert!(g.balls[0].p.x > held_at.x, "a caught ball rides with the paddle");
+        g.step(Steer::Move(0.0), true);
+        assert!(g.balls[0].held.is_none() && g.balls[0].v.y < 0.0, "fire didn't let go");
+
+        // chisel: fire shoots, and a chisel breaks the first brick above
+        let mut g = catching(Power::Chisel);
+        let before = g.left();
+        g.step(Steer::Move(0.0), true);
+        assert_eq!(g.bolts.len(), 2);
+        for _ in 0..120 {
+            g.step(Steer::Move(0.0), false);
+        }
+        assert!(g.bolts.is_empty() && g.left() < before, "chisels broke nothing");
+
+        // a lost life takes the power away
+        let mut g = catching(Power::Plank);
+        g.balls.clear();
+        g.step(Steer::Move(0.0), false);
+        for _ in 0..200 {
+            g.step(Steer::Move(0.0), false);
+        }
+        assert_eq!(g.power, None);
+    }
+
+    #[test]
+    fn capsules_fall_now_and_then() {
+        let mut g = Game::new(None);
+        g.lives = 99;
+        let mut pilot = Pilot::new();
+        let mut seen = 0;
+        for _ in 0..(120.0 / STEP) as usize {
+            let s = pilot.steer(&g);
+            let before = g.capsules.len();
+            g.step(s, true);
+            if g.capsules.len() > before {
+                seen += 1;
+            }
+        }
+        assert!(seen >= 3, "{seen} capsules in two minutes");
+    }
+
     #[test]
     fn clockwork_winds_back_in() {
         let n = (0..levels::total()).find(|&n| levels::floor(n).rows.iter().any(|r| r.contains('k'))).unwrap();
         let mut g = Game::new(None);
         g.load_floor(n);
         g.state = State::Play;
-        g.balls = vec![Ball { p: V2::new(50.0, 50.0), v: V2::new(0.0, 0.0) }];
+        g.balls = vec![Ball::new(V2::new(50.0, 50.0), V2::new(0.0, 0.0))];
         let i = g.bricks.iter().position(|b| b.is_some_and(|b| b.kind == Kind::Clock)).unwrap();
         g.hit_brick(i);
         assert!(g.bricks[i].is_none() && g.ghost(i) == Some(0.0));
@@ -2031,7 +2310,7 @@ mod tests {
         let mut g = Game::new(None);
         g.load_floor(roof);
         g.state = State::Play;
-        g.balls = vec![Ball { p: V2::new(50.0, 28.0), v: V2::new(0.0, 0.0) }];
+        g.balls = vec![Ball::new(V2::new(50.0, 28.0), V2::new(0.0, 0.0))];
         let Path::Circle { c, r } = g.arena.path else { panic!() };
         for (paddle_at, axis, stuns) in [(0.0, 0.0, true), (PI / 2.0, 0.0, false), (PI, 0.0, true), (PI / 2.0, PI / 2.0, true)] {
             g.stun = 0.0;
@@ -2073,7 +2352,7 @@ mod tests {
         let mut g = Game::new(None);
         g.load_floor(roof_floor());
         g.state = State::Play;
-        g.balls = vec![Ball { p: V2::new(50.0, 28.0), v: V2::new(0.0, 0.0) }];
+        g.balls = vec![Ball::new(V2::new(50.0, 28.0), V2::new(0.0, 0.0))];
         let Path::Circle { c, r } = g.arena.path else { panic!() };
         // paddle at the bottom, the mark at the top
         g.paddle.s = g.arena.path.nearest(c + V2::new(0.0, r));
@@ -2121,7 +2400,7 @@ mod tests {
         g.state = State::Play;
         let Path::Circle { c, .. } = g.arena.path else { panic!() };
         let dir = V2::new(a.cos(), a.sin());
-        g.balls = vec![Ball { p: c + dir * 10.0, v: dir * g.speed }];
+        g.balls = vec![Ball::new(c + dir * 10.0, dir * g.speed)];
         // the paddle well away, on the far side
         g.paddle.s = g.arena.path.nearest(c - dir * 20.0);
         g

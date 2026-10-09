@@ -16,6 +16,7 @@ mod input;
 mod levels;
 mod map;
 mod physics;
+mod power;
 mod render;
 mod roof;
 mod tower;
@@ -241,7 +242,7 @@ fn summary(game: &Game) -> String {
             b.max,
             b.waves.len(),
             if b.tolling.is_some() { " tolling" } else { "" }
-        )) + &format!(" ghosts {}", game.ghosts.len()) + &game.webbed.gt(&0.0).then_some(" webbed").unwrap_or("") + game.iced.gt(&0.0).then_some(" iced").unwrap_or("") + game.chipped.gt(&0.0).then_some(" chipped").unwrap_or("") + &game.mason.as_ref().map_or(String::new(), |m| format!(" mason at {:.1},{:.1} hp {}/{} lobs {}", m.p.x, m.p.y, m.hp, m.max, m.lobs.len())) + &game.boss.as_ref().map_or(String::new(), |g| format!(
+        )) + &format!(" ghosts {} power {:?} capsules {:?}", game.ghosts.len(), game.power, game.capsules.iter().map(|c| c.kind).collect::<Vec<_>>()) + &game.webbed.gt(&0.0).then_some(" webbed").unwrap_or("") + game.iced.gt(&0.0).then_some(" iced").unwrap_or("") + game.chipped.gt(&0.0).then_some(" chipped").unwrap_or("") + &game.mason.as_ref().map_or(String::new(), |m| format!(" mason at {:.1},{:.1} hp {}/{} lobs {}", m.p.x, m.p.y, m.hp, m.max, m.lobs.len())) + &game.boss.as_ref().map_or(String::new(), |g| format!(
             " {:?} at {:.1},{:.1} hp {}/{} shots {}",
             g.kind,
             g.p.x,
@@ -293,6 +294,10 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
         (.., Some(r)) => Some(("ROOK", r.hp, r.max)),
         _ => game.bell.as_ref().map(|b| ("THE GREAT BELL", b.hp, b.max)).or(game.mason.as_ref().map(|m| ("THE MASON", m.hp, m.max))),
     };
+    if let Some(p) = game.power {
+        let [r, g, b] = p.rgb();
+        top.spans.push(Span::styled(format!(" {} ", p.told().split(" ·").next().unwrap_or("")), bar.fg(Color::Rgb(r, g, b)).add_modifier(Modifier::BOLD)));
+    }
     if let Some((name, hp, max)) = boss_bar {
         let red = bar.fg(Color::Rgb(255, 90, 60));
         top.spans.push(Span::styled(format!(" {name} "), red.add_modifier(Modifier::BOLD)));
@@ -323,7 +328,7 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
         State::Clear { .. } if game.arena.mode == Mode::Circle => Some(" TOWER CLIMBED · bonus 5000 ".to_string()),
         State::Clear { .. } => Some(format!(" FLOOR {} CLEAR ", game.floor + 1 - first)),
         State::Over => Some(format!(" GAME OVER · score {} · space to play again ", game.score)),
-        _ => None,
+        _ => game.caught.map(|(p, _)| format!(" {} ", p.told())),
     };
     if let Some(p) = game.map() {
         map_labels(&p, area, buf);

@@ -10,6 +10,7 @@ use crate::map;
 use crate::roof::{self, RoofView, Seen, Tilt};
 use crate::game::Balcony;
 use crate::physics::{self, V2};
+use crate::power::{self, Power};
 use crate::tower::{self, Faces};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -904,7 +905,12 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
     if d < PADDLE_TH + ps && !climbing {
         let along = (q - (a + b) * 0.5).dot((b - a).norm()).abs();
         let across = off.dot(n) / PADDLE_TH; // +1 top face, -1 underside
-        let mut body = if along > game.paddle_half() - 2.0 { [40.0, 200.0, 185.0] } else { [235.0, 170.0, 55.0] };
+        let tip = if game.power == Some(Power::Chisel) { [235.0, 70.0, 60.0] } else { [40.0, 200.0, 185.0] };
+        let mut body = if along > game.paddle_half() - 2.0 { tip } else { [235.0, 170.0, 55.0] };
+        if game.power == Some(Power::Mortar) && across > 0.2 {
+            // a layer of mortar along its top
+            body = [200.0, 195.0, 185.0];
+        }
         if game.webbed > 0.0 && ((q - a).len() * 1.3 + across * 2.0).sin() > 0.3 {
             // gummed up: silk wound round it
             body = [225.0, 225.0, 235.0];
@@ -920,6 +926,25 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
         }
         let lit = mix(scale(body, 0.5), mix(body, [255.0, 250.0, 220.0], 0.5), (across + 1.0) / 2.0);
         c = mix(c, lit, (PADDLE_TH - d) / ps + 0.5);
+    }
+    for cap in &game.capsules {
+        // a pill in its colour, lit along the top, banded at its ends
+        let l = p - cap.p;
+        let h = power::CAP_HALF;
+        let core = (h.x - h.y).max(0.0);
+        let d = V2::new((l.x.abs() - core).max(0.0), l.y).len();
+        if d < h.y + ps * 0.5 {
+            let base = rgb(cap.kind.rgb());
+            let lit = mix(mix(base, [255.0, 255.0, 255.0], 0.45), scale(base, 0.55), l.y / h.y * 0.5 + 0.5);
+            let band = (l.x.abs() - core).abs() < ps * 0.6;
+            c = mix(c, if band { scale(base, 0.5) } else { lit }, (h.y - d) / ps + 0.5);
+        }
+    }
+    for bolt in &game.bolts {
+        let tail = bolt.p - bolt.v.norm() * 1.8;
+        if (p - physics::closest_on_segment(p, tail, bolt.p)).len() < 0.35 + ps * 0.5 {
+            c = mix([255.0, 230.0, 160.0], [235.0, 90.0, 60.0], (p - bolt.p).len() / 1.8);
+        }
     }
     for &bp in &sc.balls {
         let d = (p - bp).len();
@@ -1046,6 +1071,16 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
             cell.set_symbol("▀");
             cell.set_fg(col(px[(2 * y) * w + x]));
             cell.set_bg(col(px[(2 * y + 1) * w + x]));
+        }
+    }
+    // each capsule's letter, in the cell at its middle, if it is big enough to carry one
+    if power::CAP_HALF.x * 2.0 * view.s >= 3.0 {
+        for cap in &game.capsules {
+            let (i, j) = (cap.p.x * view.s + view.ox, (cap.p.y * view.s + view.oy) / 2.0);
+            if i >= 0.0 && j >= 0.0 && (i as usize) < w && (j as u16) < area.height {
+                let cell = &mut buf[(area.x + i as u16, area.y + j as u16)];
+                cell.set_symbol(cap.kind.letter()).set_fg(Color::Rgb(20, 18, 30)).set_bg(col(rgb(cap.kind.rgb())));
+            }
         }
     }
 }

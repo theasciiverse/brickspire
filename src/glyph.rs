@@ -17,6 +17,7 @@ use crate::tower::{self, BrickHere, Faces, Sample};
 use crate::render::{self, View};
 use crate::levels::{self, Theme};
 use crate::map;
+use crate::power::Power;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -940,6 +941,10 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     } else if game.webbed > 0.0 {
         // gummed up with silk
         (Color::Rgb(225, 225, 235), PADDLE_END)
+    } else if game.power == Some(Power::Chisel) {
+        (PADDLE_BODY, Color::Rgb(235, 70, 60))
+    } else if game.power == Some(Power::Mortar) {
+        (Color::Rgb(205, 200, 190), PADDLE_END)
     } else {
         (PADDLE_BODY, PADDLE_END)
     };
@@ -963,6 +968,22 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     if ra == rb && !climbing {
         cv.put(ca.min(cb), ra, "╺", ends, None);
         cv.put(ca.max(cb), rb, "╸", ends, None);
+    }
+
+    // capsules: the letter between round ends, on their colour; chisels in flight
+    for cap in &game.capsules {
+        let (c, r) = cv.cell(cap.p);
+        let [cr, cg, cb] = cap.kind.rgb();
+        let bg = Color::Rgb(cr, cg, cb);
+        let dark = Color::Rgb(20, 18, 30);
+        cv.put(c - 1, r, "(", dark, Some(bg));
+        cv.put(c, r, cap.kind.letter(), dark, Some(bg));
+        cv.put(c + 1, r, ")", dark, Some(bg));
+    }
+    for bolt in &game.bolts {
+        let (c, r) = cv.cell(bolt.p);
+        let t = V2::new(bolt.v.x * cv.view.s, bolt.v.y * cv.view.s / 2.0);
+        cv.put(c, r, line(t, true), Color::Rgb(255, 150, 90), None);
     }
 
     // balls: a little pipe ring at the ball's true size (`╭─╮ ╰─╯` when it is two
