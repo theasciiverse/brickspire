@@ -163,7 +163,7 @@ cargo run --release                         # play
 cargo run --release -- --path arc           # preview the mini-boss arc on the same field
 cargo run --release -- --path circle        # preview the roof ring (a small test block)
 cargo run --release -- --floor 3            # start on floor 3
-cargo run --release -- --glyphs             # character graphics (g flips in the game)
+cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
 cargo run --release -- --snapshot out.ppm --size 100x30 --secs 6 [--path arc]   # headless frame
 cargo test --release
@@ -178,7 +178,10 @@ cargo test --release
   on straight floors, lives, score, particles, and the autoplay `Pilot`.
 - `levels.rs`: floors as text grids.
 - `render.rs`: pixel mode, per-pixel half-block shading of the world, scaled to any terminal.
-- `glyph.rs`: glyph mode, ASCII and box-drawing only. Scaled so a brick is whole cells
+- `glyph.rs`: glyph mode, pipe graphics (box-drawing lines, no half-blocks): bricks are
+  lengths of pipe `├──┤` (steel `╞══╡`, gilt `╠══╣`), boxes when taller than a row; the
+  paddle a heavy bar `╺━━╸` that tilts with its path; the ball a pipe ring at its
+  true size (`()`, `╭─╮ ╰─╯`, wider on big terminals). Scaled so a brick is whole cells
   (4x1 at the smallest, a 67x19 field that fits 80x24; 8x2 next), grid aligned to cells.
 - `input.rs`: keys (exact or timing), mouse chase and click, gamepad (stick aims on the roof).
 

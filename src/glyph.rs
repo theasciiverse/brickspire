@@ -1,4 +1,6 @@
-//! Glyph mode: character graphics, no half-blocks. ASCII plus box-drawing lines.
+//! Glyph mode: pipe graphics, no half-blocks. Everything is drawn in box-drawing
+//! lines: bricks are lengths of pipe (`├──┤`, or boxes when they are taller than a
+//! row), the paddle a heavy bar, the walls double pipes.
 //!
 //! A cell is about twice as tall as it is wide, so the scale is picked to make a brick
 //! exactly whole cells: 4 cells by 1 row at the smallest size (the field is then
@@ -6,7 +8,7 @@
 //! view is nudged so the brick grid lands on cell edges. Same world, same physics as
 //! pixel mode; only the drawing differs.
 
-use crate::game::{self, Game, Kind, BRICK_H, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, WORLD_H, WORLD_W};
+use crate::game::{self, Game, Kind, BALL_R, BRICK_H, FIELD_TOP, FIELD_X0, FIELD_X1, PADDLE_HALF, WORLD_H, WORLD_W};
 use crate::physics::{Path, V2};
 use crate::render::View;
 use ratatui::buffer::Buffer;
@@ -93,30 +95,33 @@ impl Canvas<'_> {
     }
 }
 
-/// A line drawn along a path, one mark per cell it passes through.
-fn trace(cv: &mut Canvas, path: &Path, sym: &str, fg: Color) {
+/// A line drawn along a path, one stroke per cell it passes through, each stroke
+/// following the path's direction there.
+fn trace(cv: &mut Canvas, path: &Path, fg: Color) {
     let n = (path.len() * 4.0) as usize;
     let mut last = (i32::MIN, i32::MIN);
     for i in 0..=n {
-        let (c, r) = cv.cell(path.point(path.len() * i as f32 / n as f32));
+        let s = path.len() * i as f32 / n as f32;
+        let (c, r) = cv.cell(path.point(s));
         if (c, r) != last {
-            cv.put(c, r, sym, fg, None);
+            let t = path.tangent(s);
+            cv.put(c, r, line(V2::new(t.x * cv.view.s, t.y * cv.view.s / 2.0), false), fg, None);
             last = (c, r);
         }
     }
 }
 
-/// The character for a stretch of paddle lying along cell-space direction `t`.
-fn bar(t: V2) -> &'static str {
+/// The box-drawing stroke for a line running along cell-space direction `t`.
+fn line(t: V2, heavy: bool) -> &'static str {
     let slope = t.y.abs() / t.x.abs().max(1e-6);
     if slope < 0.45 {
-        "="
+        if heavy { "━" } else { "─" }
     } else if slope > 2.2 {
-        "|"
+        if heavy { "┃" } else { "│" }
     } else if (t.x > 0.0) == (t.y > 0.0) {
-        "\\"
+        "╲"
     } else {
-        "/"
+        "╱"
     }
 }
 
@@ -164,7 +169,7 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         }
     }
     if !matches!(game.arena.path, Path::Line { .. }) {
-        trace(&mut cv, &game.arena.path, "·", RAIL);
+        trace(&mut cv, &game.arena.path, RAIL);
     }
 
     // walls: steel pipes with brass bands
@@ -186,7 +191,8 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         cv.put(right, top, "╗", STEEL, Some(SKY));
     }
 
-    // bricks: whole cells, `[` and `]` marking each one's ends
+    // bricks: lengths of pipe, single for ordinary, double for steel (single again
+    // once cracked) and gilt; boxes when a brick is more than one row tall
     for (i, brick) in game.bricks.iter().enumerate() {
         let Some(brick) = brick else { continue };
         let (min, max) = game.brick_box(i);
@@ -194,18 +200,37 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         let (c1, r1) = cv.cell(max - V2::new(0.01, 0.01));
         let base = game::brick_rgb(brick.kind);
         let (bg, fg) = if brick.flash > 0.0 {
-            (Color::Rgb(255, 255, 255), dim(base, 0.6))
+            (Color::Rgb(255, 255, 255), dim(base, 0.5))
         } else {
-            (rgb(base), dim(base, 0.4))
+            (dim(base, 0.3), rgb(base))
         };
-        let fill = match brick.kind {
-            Kind::Plain(_) => " ",
-            Kind::Steel => if brick.hp > 1 { ":" } else { "." },
-            Kind::Gilt => "*",
+        let double = match brick.kind {
+            Kind::Plain(_) => false,
+            Kind::Steel => brick.hp > 1,
+            Kind::Gilt => true,
+        };
+        // [left end, run, right end] for a one-row brick, then the box corners and sides
+        let (ends, run, side, corners) = match (brick.kind, double) {
+            (Kind::Gilt, _) => (["╠", "╣"], "═", "║", ["╔", "╗", "╚", "╝"]),
+            (_, true) => (["╞", "╡"], "═", "│", ["╒", "╕", "╘", "╛"]),
+            _ => (["├", "┤"], "─", "│", ["┌", "┐", "└", "┘"]),
         };
         for r in r0..=r1 {
             for c in c0..=c1 {
-                let sym = if c == c0 { "[" } else if c == c1 { "]" } else { fill };
+                let (left, right, top, bottom) = (c == c0, c == c1, r == r0, r == r1);
+                let sym = if r0 == r1 {
+                    if left { ends[0] } else if right { ends[1] } else { run }
+                } else {
+                    match (left, right, top, bottom) {
+                        (true, _, true, _) => corners[0],
+                        (_, true, true, _) => corners[1],
+                        (true, _, _, true) => corners[2],
+                        (_, true, _, true) => corners[3],
+                        (true, _, _, _) | (_, true, _, _) => side,
+                        (_, _, true, _) | (_, _, _, true) => run,
+                        _ => " ",
+                    }
+                };
                 cv.put(c, r, sym, fg, Some(bg));
             }
         }
@@ -217,10 +242,10 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         cv.put(c, r, sym, dim(part.rgb, (part.life / 0.5).min(1.0)), None);
     }
 
-    // the paddle: one mark per cell along it, teal at the ends
+    // the paddle: a heavy bar, one stroke per cell along it, teal at the ends
     let (a, b, _) = game.paddle_segment();
     let t = (b - a).norm();
-    let sym = bar(V2::new(t.x * view.s, t.y * view.s / 2.0));
+    let sym = line(V2::new(t.x * view.s, t.y * view.s / 2.0), true);
     let steps = (PADDLE_HALF * 8.0) as usize;
     for i in 0..=steps {
         let u = i as f32 / steps as f32;
@@ -228,17 +253,39 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         let end = (u - 0.5).abs() * 2.0 * PADDLE_HALF > PADDLE_HALF - 2.0;
         cv.put(c, r, sym, if end { PADDLE_END } else { PADDLE_BODY }, None);
     }
+    // cap a level paddle with half-strokes so its ends read as rounded
+    let ((ca, ra), (cb, rb)) = (cv.cell(a), cv.cell(b));
+    if ra == rb {
+        cv.put(ca.min(cb), ra, "╺", PADDLE_END, None);
+        cv.put(ca.max(cb), rb, "╸", PADDLE_END, None);
+    }
 
-    // balls: a mark that sits high, middle or low in its cell, so motion reads finer
-    // than one row at a time
+    // balls: a little pipe ring at the ball's true size (`╭─╮ ╰─╯` when it is two
+    // rows tall, `()` at the smallest size), centred on the ball
+    let cols = ((2.0 * BALL_R * view.s).round() as i32).max(2);
+    let rows = ((BALL_R * view.s).round() as i32).max(1);
+    let fg = Color::Rgb(255, 255, 240);
     for p in game.shown_balls() {
-        let py = (p.y * view.s + view.oy) / 2.0;
-        let sym = match py.rem_euclid(1.0) {
-            f if f < 0.33 => "°",
-            f if f < 0.67 => "o",
-            _ => ".",
-        };
-        let (c, r) = cv.cell(p);
-        cv.put(c, r, sym, Color::Rgb(255, 255, 240), None);
+        let c0 = (p.x * view.s + view.ox - cols as f32 / 2.0).round() as i32;
+        let r0 = ((p.y * view.s + view.oy) / 2.0 - rows as f32 / 2.0).round() as i32;
+        for r in 0..rows {
+            for c in 0..cols {
+                let (left, right, top, bottom) = (c == 0, c == cols - 1, r == 0, r == rows - 1);
+                let sym = if rows == 1 {
+                    if left { "(" } else if right { ")" } else { "─" }
+                } else {
+                    match (left, right, top, bottom) {
+                        (true, _, true, _) => "╭",
+                        (_, true, true, _) => "╮",
+                        (true, _, _, true) => "╰",
+                        (_, true, _, true) => "╯",
+                        (true, _, _, _) | (_, true, _, _) => "│",
+                        (_, _, true, _) | (_, _, _, true) => "─",
+                        _ => " ",
+                    }
+                };
+                cv.put(c0 + c, r0 + r, sym, fg, None);
+            }
+        }
     }
 }
