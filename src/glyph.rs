@@ -108,16 +108,71 @@ impl Canvas<'_> {
 /// following the path's direction there.
 fn trace(cv: &mut Canvas, path: &Path, fg: Color) {
     let n = (path.len() * 4.0) as usize;
-    let mut last = (i32::MIN, i32::MIN);
-    for i in 0..=n {
-        let s = path.len() * i as f32 / n as f32;
-        let (c, r) = cv.cell(path.point(s));
-        if (c, r) != last {
-            let t = path.tangent(s);
-            cv.put(c, r, line(V2::new(t.x * cv.view.s, t.y * cv.view.s / 2.0), false), fg, None);
-            last = (c, r);
+    let cells = walk(cv, (0..=n).map(|i| path.point(path.len() * i as f32 / n as f32)));
+    for (c, r, sym) in strokes(&cells, false, path.wraps()) {
+        cv.put(c, r, sym, fg, None);
+    }
+}
+
+/// The cells a line passes through, in order, each once.
+fn walk(cv: &Canvas, points: impl Iterator<Item = V2>) -> Vec<(i32, i32)> {
+    let mut cells: Vec<(i32, i32)> = Vec::new();
+    for p in points {
+        let cell = cv.cell(p);
+        if cells.last() != Some(&cell) {
+            cells.push(cell);
         }
     }
+    cells
+}
+
+/// A connected line through `cells`: level runs as `─` (`━` if `heavy`), upright
+/// runs as `│`, and wherever the line steps to another row, one `╱` or `╲` at the step,
+/// so a gentle slope reads as one line rather than separate dashes. `closed` joins
+/// the last cell back to the first (a ring).
+fn strokes(cells: &[(i32, i32)], heavy: bool, closed: bool) -> Vec<(i32, i32, &'static str)> {
+    let n = cells.len();
+    let steep = match (cells.first(), cells.last()) {
+        (Some(&(c0, r0)), Some(&(c1, r1))) => (r1 - r0).abs() > (c1 - c0).abs(),
+        _ => false,
+    };
+    (0..n)
+        .map(|i| {
+            let (c, r) = cells[i];
+            let at = |j: isize| -> Option<(i32, i32)> {
+                let j = i as isize + j;
+                if closed { Some(cells[j.rem_euclid(n as isize) as usize]) } else { cells.get(usize::try_from(j).ok()?).copied() }
+            };
+            // the rows this cell steps to on either side
+            let step = |o: Option<(i32, i32)>| o.map(|(oc, or)| (oc - c, or - r));
+            let (back, ahead) = (step(at(-1)), step(at(1)));
+            let rises = |d: Option<(i32, i32)>| d.is_some_and(|(_, dr)| dr != 0);
+            // upright where both neighbours are straight above and below, or at an
+            // end of a line that is steep overall
+            let upright = match (back, ahead) {
+                (Some((bc, _)), Some((ac, _))) => bc == 0 && ac == 0,
+                (Some((dc, _)), None) | (None, Some((dc, _))) => dc == 0 && steep,
+                _ => false,
+            };
+            let sym = if upright {
+                if heavy { "┃" } else { "│" }
+            } else if rises(ahead) {
+                // which way the line runs through here, left to right on screen
+                let (dc, dr) = match (back, ahead) {
+                    (Some((bc, br)), Some((ac, ar))) => (ac - bc, ar - br),
+                    (Some((bc, br)), None) => (-bc, -br),
+                    (None, Some(d)) => d,
+                    _ => (1, 0),
+                };
+                if (dc > 0) == (dr > 0) { "╲" } else { "╱" }
+            } else if heavy {
+                "━"
+            } else {
+                "─"
+            };
+            (c, r, sym)
+        })
+        .collect()
 }
 
 /// The box-drawing stroke for a line running along cell-space direction `t`.
@@ -468,14 +523,18 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         (PADDLE_BODY, PADDLE_END)
     };
     let (a, b, _) = game.paddle_segment();
-    let t = (b - a).norm();
-    let sym = line(V2::new(t.x * view.s, t.y * view.s / 2.0), true);
     let steps = (PADDLE_HALF * 8.0) as usize;
-    for i in 0..=steps {
-        let u = i as f32 / steps as f32;
-        let (c, r) = cv.cell(a + (b - a) * u);
-        let end = (u - 0.5).abs() * 2.0 * PADDLE_HALF > PADDLE_HALF - 2.0;
-        cv.put(c, r, sym, if end { ends } else { body }, None);
+    let cells = walk(&cv, (0..=steps).map(|i| a + (b - a) * (i as f32 / steps as f32)));
+    // the teal ends: the last 2 units at each end of the bar
+    let bar: Vec<_> = strokes(&cells, true, false)
+        .into_iter()
+        .map(|(c, r, sym)| {
+            let p = cv.centre(c, r);
+            (c, r, sym, (p - a).len().min((p - b).len()) < 2.0)
+        })
+        .collect();
+    for (c, r, sym, tip) in bar {
+        cv.put(c, r, sym, if tip { ends } else { body }, None);
     }
     // cap a level paddle with half-strokes so its ends read as rounded
     let ((ca, ra), (cb, rb)) = (cv.cell(a), cv.cell(b));
