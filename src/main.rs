@@ -240,7 +240,7 @@ fn summary(game: &Game) -> String {
             b.max,
             b.waves.len(),
             if b.tolling.is_some() { " tolling" } else { "" }
-        )) + &format!(" ghosts {}", game.ghosts.len()) + &game.webbed.gt(&0.0).then_some(" webbed").unwrap_or("") + &game.boss.as_ref().map_or(String::new(), |g| format!(
+        )) + &format!(" ghosts {}", game.ghosts.len()) + &game.webbed.gt(&0.0).then_some(" webbed").unwrap_or("") + game.iced.gt(&0.0).then_some(" iced").unwrap_or("") + &game.boss.as_ref().map_or(String::new(), |g| format!(
             " {:?} at {:.1},{:.1} hp {}/{} shots {}",
             g.kind,
             g.p.x,
@@ -280,6 +280,7 @@ fn hud(game: &Game, input: &Input, best: u32, paused: bool, area: Rect, buf: &mu
             match g.kind {
                 levels::MiniKind::Spider => "SPIDER",
                 levels::MiniKind::Jack => "THE JACK",
+                levels::MiniKind::Serpent => "SEA SERPENT",
                 levels::MiniKind::Gargoyle => "GARGOYLE",
             },
             g.hp,

@@ -171,7 +171,7 @@ impl RoofView {
         }
         let i = r * self.cols + c;
         let kind = self.cells[i]?;
-        let hp = if kind == Kind::Steel { 2 } else { 1 };
+        let hp = game::start_hp(kind, game.floor + 1);
         Some(BrickHere { id: (-1, i), kind, hp, flash: 0.0, lx: local.x.rem_euclid(BRICK_W), ly: local.y.rem_euclid(BRICK_H) })
     }
 }

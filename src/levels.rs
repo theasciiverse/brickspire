@@ -5,7 +5,8 @@
 //! `m` magenta, `y` yellow; `S` steel (takes several hits); `G` gilt (can't be broken,
 //! and doesn't count towards clearing the floor); `s` stone (what the Gargoyle lays);
 //! `v` vine (slides along its row); `W` web (what the spider spins); `k` clockwork
-//! (winds itself back in a while after it is broken).
+//! (winds itself back in a while after it is broken); `i` ice (two hits, and the
+//! ball skids off it at a shallower angle).
 //!
 //! Floors are numbered straight through all the towers (0 is the first tower's ground
 //! floor); after the last tower the climb starts again from the first.
@@ -38,6 +39,7 @@ pub enum MiniKind {
     Gargoyle,
     Spider,
     Jack,
+    Serpent,
 }
 
 /// A tower's look: sky, stone, the ground far below.
@@ -53,6 +55,8 @@ pub struct Theme {
     pub fields: [[u8; 3]; 2],
     /// Ivy growing over the walls.
     pub ivy: bool,
+    /// Rain streaking across the sky.
+    pub rain: bool,
 }
 
 pub struct Tower {
@@ -72,6 +76,7 @@ pub const TOWERS: &[Tower] = &[
             mortar: [14, 16, 30],
             fields: [[10, 18, 14], [24, 28, 17]],
             ivy: false,
+            rain: false,
         },
         mini: MiniKind::Gargoyle,
         floors: OLD_KEEP,
@@ -85,6 +90,7 @@ pub const TOWERS: &[Tower] = &[
             mortar: [18, 22, 22],
             fields: [[8, 26, 12], [14, 40, 16]],
             ivy: true,
+            rain: false,
         },
         mini: MiniKind::Spider,
         floors: IVY_TOWER,
@@ -98,9 +104,24 @@ pub const TOWERS: &[Tower] = &[
             mortar: [40, 29, 21],
             fields: [[58, 46, 20], [96, 76, 30]],
             ivy: false,
+            rain: false,
         },
         mini: MiniKind::Jack,
         floors: BELL_TOWER,
+    },
+    Tower {
+        name: "The Sea Tower",
+        theme: Theme {
+            sky: [[16, 20, 32], [64, 74, 88]],
+            stars: 0.0,
+            wall: [64, 66, 76],
+            mortar: [38, 40, 48],
+            fields: [[12, 34, 58], [26, 60, 88]],
+            ivy: false,
+            rain: true,
+        },
+        mini: MiniKind::Serpent,
+        floors: SEA_TOWER,
     },
 ];
 
@@ -381,6 +402,85 @@ pub const BELL_TOWER: &[Floor] = &[
             ".......",
         ],
         kind: FloorKind::Roof(RoofBoss::Bell),
+    },
+];
+
+/// The fourth tower, a lighthouse on a cliff in a storm: ice bricks, the sea serpent
+/// on the balcony, the Weathercock on the roof (it roams the middle, so the roof's
+/// bricks keep to small groups round it).
+pub const SEA_TOWER: &[Floor] = &[
+    Floor {
+        name: "The Lamp Gate",
+        rows: &["ccccccccccccc", "wwwwwwwwwwwww", "iiii.....iiii", ".............", "bbb.SSSSS.bbb", "iiiiiiiiiiiii"],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "Breakers",
+        rows: &[
+            "i.i.i.i.i.i.i",
+            ".c.c.c.c.c.c.",
+            "b.b.b.b.b.b.b",
+            ".............",
+            "SSiiiSSSiiiSS",
+            "wwwwwwwwwwwww",
+        ],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "The Lens",
+        rows: &[
+            ".....iii.....",
+            "...iiyyyii...",
+            "..iyywwwyyi..",
+            "..iyywwwyyi..",
+            "...iiyyyii...",
+            ".....iii.....",
+            "G...........G",
+        ],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "Pack Ice",
+        rows: &[
+            "iiiiiiiiiiiii",
+            "iSiiiiSiiiiSi",
+            "ccccccccccccc",
+            ".............",
+            "bbbbb...bbbbb",
+            "..iii...iii..",
+        ],
+        kind: FloorKind::Plain,
+    },
+    Floor {
+        name: "The Serpent's Balcony",
+        // the top rows stay open: the serpent's head sways there, and freezes ice in row 4
+        rows: &[
+            ".............",
+            ".............",
+            ".............",
+            ".............",
+            "S...........S",
+            "iii..ccc..iii",
+            "..c.......c..",
+        ],
+        kind: FloorKind::Balcony,
+    },
+    Floor {
+        name: "The Weathercock's Roof",
+        rows: &[
+            ".......",
+            "..cic..",
+            ".......",
+            ".......",
+            ".i...i.",
+            ".S...S.",
+            ".i...i.",
+            ".......",
+            ".......",
+            "..cic..",
+            ".......",
+        ],
+        kind: FloorKind::Roof(RoofBoss::Weathercock),
     },
 ];
 

@@ -159,7 +159,7 @@ impl Faces {
         Some(BrickHere {
             id: (n, i),
             kind,
-            hp: if kind == Kind::Steel { game::steel_hp(n as usize) } else { 1 },
+            hp: game::start_hp(kind, n as usize),
             flash: 0.0,
             lx: q.x.rem_euclid(BRICK_W),
             ly: q.y.rem_euclid(BRICK_H),

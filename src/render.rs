@@ -64,7 +64,17 @@ fn hash(x: u32, y: u32) -> u32 {
 /// The tower's sky, darker at the top, with stars fixed to the screen, twinkling
 /// (as many as its theme has).
 fn sky(theme: &Theme, i: u32, j: u32, h_px: f32, time: f32) -> Rgb {
-    let base = mix(rgb(theme.sky[0]), rgb(theme.sky[1]), j as f32 / h_px);
+    let mut base = mix(rgb(theme.sky[0]), rgb(theme.sky[1]), j as f32 / h_px);
+    if theme.rain {
+        // storm clouds rolling by, and rain streaking down across them
+        let (x, y) = (i as f32 / h_px, j as f32 / h_px);
+        let cloud = (x * 3.1 + time * 0.03).sin() * (y * 7.0 + x * 2.0).cos() + (x * 7.3 - time * 0.05 + y * 3.0).sin() * 0.5;
+        base = mix(base, [92.0, 98.0, 112.0], (cloud * 0.3).clamp(0.0, 0.25) * (1.0 - y));
+        let streak = (i as f32 + j as f32 * 0.35 + time * 90.0).rem_euclid(37.0) < 1.0 && hash(i / 3, (j as f32 + time * 60.0) as u32 / 5) % 7 == 0;
+        if streak {
+            return mix(base, [170.0, 185.0, 210.0], 0.35);
+        }
+    }
     let h = hash(i, j);
     let starry = (j as f32 / h_px) < 0.25 + 0.75 * theme.stars;
     if h % 89 == 0 && starry && ((h >> 7) & 0xff) as f32 / 255.0 < theme.stars.max(0.5) {
@@ -127,6 +137,17 @@ fn brick_colour(b: &tower::BrickHere, at: V2, time: f32, psx: f32, psy: f32) -> 
         } else {
             [205.0, 155.0, 72.0]
         };
+    } else if b.kind == Kind::Ice {
+        // pale and glassy, a streak of light across it; cracked once hit
+        let glint = ((b.lx - b.ly * 1.5).rem_euclid(5.0) - 1.2).abs() < psx;
+        base = if glint { [235.0, 250.0, 255.0] } else { mix([150.0, 210.0, 235.0], [200.0, 235.0, 250.0], b.ly / BRICK_H) };
+        if b.hp < 2 {
+            let crack = ((b.lx - 2.2) * 0.9 - (b.ly - 1.5) * 1.4 + ((b.ly * 3.0).sin() * 0.4)).abs() < psx * 0.7
+                || ((b.lx - 3.6) * 0.6 + (b.ly - 1.0) * 1.2).abs() < psx * 0.6 && b.ly < 1.6;
+            if crack {
+                base = [70.0, 110.0, 140.0];
+            }
+        }
     } else if b.kind == Kind::Web {
         // silk strands criss-crossing, the wall dim behind
         let strand = (b.lx + b.ly * 1.6).rem_euclid(2.0) < psx || (b.lx - b.ly * 1.6).rem_euclid(2.0) < psx;
@@ -562,6 +583,38 @@ fn spider(g: &MiniBoss, l: V2) -> Option<Rgb> {
     c
 }
 
+/// The sea serpent's head, in its own units (`l` from its middle, y down): a long
+/// green-teal head facing down, a paler snout and jaw (open, with fangs, while it
+/// aims), yellow eyes and red fins swept back either side.
+fn serpent(g: &MiniBoss, l: V2) -> Option<Rgb> {
+    let ax = l.x.abs();
+    let body = (l.x / 3.0).powi(2) + ((l.y + 0.2) / 2.4).powi(2) < 1.0;
+    let snout = (l.x / 1.7).powi(2) + ((l.y - 1.6) / 1.1).powi(2) < 1.0;
+    let fin = ax > 2.0 && ax < 4.0 && l.y > -2.6 + (ax - 2.0) * 0.2 && l.y < -0.6 - (ax - 2.0) * 0.6 && ((ax * 3.0).sin() > -0.4);
+    let eye = (V2::new(ax, l.y) - V2::new(1.3, -0.1)).len() < 0.42;
+    let open = g.aiming();
+    let c = if eye {
+        Some(if open { [255.0, 240.0, 140.0] } else { [235.0, 200.0, 60.0] })
+    } else if open && snout && l.y > 1.4 && ax < 1.0 {
+        // the open jaw: dark inside, two white fangs
+        Some(if (ax - 0.55).abs() < 0.2 && l.y < 2.1 { [240.0, 240.0, 230.0] } else { [70.0, 20.0, 30.0] })
+    } else if snout {
+        Some(mix([150.0, 200.0, 170.0], [80.0, 140.0, 120.0], (l.y - 1.0) / 1.5))
+    } else if body {
+        let scale_ = ((l.x * 2.2).sin() * (l.y * 2.2).sin()).abs() < 0.15;
+        let base = mix([60.0, 150.0, 140.0], [20.0, 70.0, 70.0], (l.y + 2.6) / 5.0 + ax * 0.08);
+        Some(if scale_ { scale(base, 0.75) } else { base })
+    } else if fin {
+        Some(mix([220.0, 80.0, 70.0], [140.0, 40.0, 50.0], (ax - 2.0) / 2.0))
+    } else {
+        None
+    };
+    if g.hurt > 0.0 && (g.hurt * 12.0) as i32 % 2 == 0 {
+        return c.map(|c| mix(c, [255.0, 255.0, 255.0], 0.75));
+    }
+    c
+}
+
 /// The Jack, in its own units (`l` from its middle, y down): an iron figure in a
 /// helmet, marching, its hammer raised over its shoulder and brought down on the
 /// little gold bell at its side when it strikes (raised higher, eyes lit, just before).
@@ -679,11 +732,31 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
             // its thread, up to the lintel
             c = mix(c, [200.0, 200.0, 215.0], 0.6);
         }
+        if g.kind == MiniKind::Serpent && p.y > FIELD_TOP {
+            // its neck, up over the lintel: scaled, a pale belly down one side
+            let neck = g.neck();
+            let (mut best, mut at) = (f32::MAX, 0.0);
+            for (k, w) in neck.windows(2).enumerate() {
+                let q = physics::closest_on_segment(p, w[0], w[1]);
+                let d = (p - q).len();
+                if d < best {
+                    best = d;
+                    at = k as f32 + (q - w[0]).len() / (w[1] - w[0]).len().max(1e-3);
+                }
+            }
+            let r = 1.6 - at * 0.04;
+            if best < r + ps * 0.5 {
+                let scales = ((at * 4.0).fract() - 0.5).abs() < 0.12;
+                let base = mix([40.0, 120.0, 112.0], [18.0, 60.0, 62.0], best / r);
+                c = if scales { scale(base, 0.7) } else { base };
+            }
+        }
         if l.x.abs() < half.x + 0.5 && l.y.abs() < half.y + 1.0 {
             let drawn = match g.kind {
                 MiniKind::Gargoyle => gargoyle(g, l),
                 MiniKind::Spider => spider(g, l),
                 MiniKind::Jack => jack(g, l * (1.0 / boss::JACK_SCALE)),
+                MiniKind::Serpent => serpent(g, l * (1.0 / boss::SERPENT_SCALE)),
             };
             if let Some(gc) = drawn {
                 c = gc;
@@ -704,6 +777,11 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
                 ShotKind::Chime => {
                     if d > boss::SHOT_R * 0.45 { mix([255.0, 250.0, 210.0], [240.0, 180.0, 60.0], d / boss::SHOT_R) } else { mix(c, [255.0, 230.0, 140.0], 0.3) }
                 }
+                // freezing spray: a pale ball of droplets
+                ShotKind::Spray => {
+                    let l = p - shot.p;
+                    if ((l.x * 5.0).sin() * (l.y * 5.0).sin()).abs() > 0.5 { [240.0, 252.0, 255.0] } else { [130.0, 200.0, 235.0] }
+                }
                 ShotKind::Fire => mix([255.0, 240.0, 150.0], [230.0, 60.0, 20.0], d / boss::SHOT_R),
             };
             c = mix(c, blob, (boss::SHOT_R - d) / ps + 0.5);
@@ -722,6 +800,10 @@ fn shade(sc: &Scene, p: V2, ps: f32, sky: Rgb, ground: Rgb) -> Rgb {
         if game.webbed > 0.0 && ((q - a).len() * 1.3 + across * 2.0).sin() > 0.3 {
             // gummed up: silk wound round it
             body = [225.0, 225.0, 235.0];
+        }
+        if game.iced > 0.0 && ((q - a).len() * 0.8 - across).rem_euclid(1.6) < 0.5 {
+            // iced over: frosted, glinting
+            body = [200.0, 235.0, 250.0];
         }
         if game.stun > 0.0 {
             // stunned: greyed, flickering

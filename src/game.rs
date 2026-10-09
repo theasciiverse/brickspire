@@ -66,6 +66,13 @@ const GRAVITY: f32 = 60.0;
 const STUN: f32 = 1.0;
 const WEBBED: f32 = 2.5;
 const WEB_SLOW: f32 = 0.4;
+/// Seconds the paddle stays iced over by the serpent's spray, and how quickly it
+/// can change its speed meanwhile (share of the difference per second).
+const ICED: f32 = 2.5;
+const ICE_GRIP: f32 = 2.5;
+/// Off ice, the ball keeps this share of its speed away from the surface (it skids
+/// off at a shallower angle).
+const ICE_SKID: f32 = 0.55;
 /// How far the camera pulls back on a boss floor (pixel graphics).
 const BOSS_ZOOM: f32 = 0.86;
 
@@ -168,6 +175,8 @@ pub enum Kind {
     Web,
     /// Clockwork: winds itself back in a while after it is broken.
     Clock,
+    /// Ice: two hits (it cracks first); the ball skids off it.
+    Ice,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -280,8 +289,10 @@ pub struct Game {
     pub boss_floor: bool,
     pub shots: Vec<Shot>,
     pub stun: f32,
-    /// How long the paddle has left gummed up by the Spider's web (slow).
+    /// How long the paddle has left gummed up by the Spider's web (slow), and iced
+    /// over by the serpent's spray (sliding).
     pub webbed: f32,
+    pub iced: f32,
     /// A paddle path forced for every floor (`--path`), instead of each floor's own.
     forced: Option<Mode>,
     seed: u32,
@@ -324,6 +335,16 @@ pub fn brick_rgb(kind: Kind) -> [u8; 3] {
         Kind::Vine => [70, 170, 70],
         Kind::Web => [215, 215, 225],
         Kind::Clock => [200, 150, 70],
+        Kind::Ice => [170, 225, 245],
+    }
+}
+
+/// Hits a new brick of `kind` takes on floor `n`.
+pub fn start_hp(kind: Kind, n: usize) -> u8 {
+    match kind {
+        Kind::Steel => steel_hp(n),
+        Kind::Ice => 2,
+        _ => 1,
     }
 }
 
@@ -343,6 +364,7 @@ pub fn parse(def: &Floor) -> (usize, usize, Vec<Option<Kind>>) {
                     'v' => Some(Kind::Vine),
                     'W' => Some(Kind::Web),
                     'k' => Some(Kind::Clock),
+                    'i' => Some(Kind::Ice),
                     _ => Some(Kind::Plain("wocgrbmy".find(ch)? as u8)),
                 })
                 .collect();
@@ -393,6 +415,7 @@ impl Game {
             shots: Vec::new(),
             stun: 0.0,
             webbed: 0.0,
+            iced: 0.0,
             forced,
             seed: 0x9e37_79b9,
         };
@@ -435,7 +458,6 @@ impl Game {
             Path::Circle { c, .. } => c - V2::new(w / 2.0, h / 2.0),
             _ => line_origin(cols),
         };
-        let steel_hp = steel_hp(n);
         self.bricks = cells
             .into_iter()
             .enumerate()
@@ -443,7 +465,7 @@ impl Game {
                 k.map(|kind| Brick {
                     // vines in alternate rows set off opposite ways
                     dir: if (i / cols) % 2 == 0 { 1 } else { -1 },
-                    ..Brick::new(kind, if kind == Kind::Steel { steel_hp } else { 1 })
+                    ..Brick::new(kind, start_hp(kind, n))
                 })
             })
             .collect();
@@ -458,6 +480,7 @@ impl Game {
         self.shots.clear();
         self.stun = 0.0;
         self.webbed = 0.0;
+        self.iced = 0.0;
         self.speed = self.speed_start();
         if self.arena.path.wraps() {
             self.paddle.s = 0.0;
@@ -689,6 +712,7 @@ impl Game {
         }
         self.stun = (self.stun - STEP).max(0.0);
         self.webbed = (self.webbed - STEP).max(0.0);
+        self.iced = (self.iced - STEP).max(0.0);
         self.move_paddle(steer);
         self.update_boss();
         if let State::Serve { wait } = self.state {
@@ -751,7 +775,7 @@ impl Game {
         let path = self.arena.path;
         let slow = if self.webbed > 0.0 { WEB_SLOW } else { 1.0 };
         let chase = |to: f32| (path.delta(self.paddle.s, to) / STEP).clamp(-PADDLE_CHASE * slow, PADDLE_CHASE * slow);
-        self.paddle.vel = if self.stun > 0.0 {
+        let want = if self.stun > 0.0 {
             0.0
         } else {
             match steer {
@@ -763,7 +787,19 @@ impl Game {
             },
             }
         };
-        self.paddle.s = path.keep(self.paddle.s + self.paddle.vel * STEP, self.paddle_half());
+        // iced over, it slides: slow to get going and slow to stop (a stun still holds it)
+        self.paddle.vel = if self.iced > 0.0 && self.stun <= 0.0 {
+            let want = want.clamp(-self.paddle_speed(), self.paddle_speed());
+            self.paddle.vel + (want - self.paddle.vel) * (ICE_GRIP * STEP).min(1.0)
+        } else {
+            want
+        };
+        let s = path.keep(self.paddle.s + self.paddle.vel * STEP, self.paddle_half());
+        if (s - (self.paddle.s + self.paddle.vel * STEP)).abs() > 1e-4 {
+            // ran into the end of its path
+            self.paddle.vel = 0.0;
+        }
+        self.paddle.s = s;
         // a paddle moving into a ball pushes it out and bats it
         let (a, b, n) = self.paddle_segment();
         for i in 0..self.balls.len() {
@@ -813,7 +849,13 @@ impl Game {
             match thing {
                 Thing::Wall => self.balls[i].v = ball.v.reflect(hit.n),
                 Thing::Brick(b) => {
-                    self.balls[i].v = ball.v.reflect(hit.n);
+                    let mut v = ball.v.reflect(hit.n);
+                    if self.bricks[b].is_some_and(|b| b.kind == Kind::Ice) {
+                        // skids off: less of its speed away from the ice
+                        let away = v.dot(hit.n);
+                        v = v - hit.n * (away * (1.0 - ICE_SKID));
+                    }
+                    self.balls[i].v = v;
                     self.hit_brick(b);
                 }
                 Thing::Paddle => self.bat(i),
@@ -978,6 +1020,7 @@ impl Game {
             Kind::Stone | Kind::Web => 10,
             Kind::Vine => 80,
             Kind::Clock => 60,
+            Kind::Ice => 70,
             _ => 50 * (self.floor as u32 + 1),
         };
         let (min, max) = self.brick_box(i);
@@ -1043,6 +1086,11 @@ impl Game {
                 info!("paddle stunned by a chime");
                 self.stun = STUN;
                 self.burst(at, V2::new(2.0, 1.0), 10, [255, 225, 120], 22.0);
+            }
+            Some((at, ShotKind::Spray)) => {
+                info!("paddle iced over");
+                self.iced = ICED;
+                self.burst(at, V2::new(3.0, 1.0), 12, [190, 235, 255], 14.0);
             }
             Some((at, ShotKind::Web)) => {
                 info!("paddle webbed");
@@ -1342,6 +1390,7 @@ impl Game {
         let body = match kind {
             MiniKind::Spider => [70, 40, 80],
             MiniKind::Jack => [60, 62, 74],
+            MiniKind::Serpent => [40, 110, 105],
             MiniKind::Gargoyle => [150, 140, 160],
         };
         match hurt {
@@ -1363,6 +1412,7 @@ impl Game {
                 let spark = match kind {
                     MiniKind::Spider => [215, 215, 225],
                     MiniKind::Jack => [255, 210, 110],
+                    MiniKind::Serpent => [190, 235, 255],
                     MiniKind::Gargoyle => [255, 120, 40],
                 };
                 self.burst(at, half, 20, spark, 24.0);
@@ -1377,6 +1427,7 @@ impl Game {
         let brick = match kind {
             MiniKind::Spider => Kind::Web,
             MiniKind::Jack => Kind::Clock,
+            MiniKind::Serpent => Kind::Ice,
             MiniKind::Gargoyle => Kind::Stone,
         };
         let y = at.y + half.y + 2.5 - self.origin.y;
@@ -1392,7 +1443,7 @@ impl Game {
             let (min, max) = self.brick_box(i);
             let in_the_way = self.balls.iter().any(|b| physics::box_overlap(b.p, min, max, BALL_R + 0.5).is_some());
             if self.bricks[i].is_none() && !in_the_way {
-                self.bricks[i] = Some(Brick { flash: 0.15, ..Brick::new(brick, 1) });
+                self.bricks[i] = Some(Brick { flash: 0.15, ..Brick::new(brick, start_hp(brick, self.floor)) });
                 laid += 1;
             }
         }
@@ -1626,7 +1677,7 @@ mod tests {
             for f in t.floors {
                 let width = if matches!(f.kind, FloorKind::Roof(_)) { 7 } else { 13 };
                 assert!(f.rows.iter().all(|r| r.len() == width), "{} is not {width} wide", f.name);
-                assert!(f.rows.iter().flat_map(|r| r.chars()).all(|c| ".wocgrbmySGvk".contains(c)), "{} has a stray character", f.name);
+                assert!(f.rows.iter().flat_map(|r| r.chars()).all(|c| ".wocgrbmySGvki".contains(c)), "{} has a stray character", f.name);
             }
         }
         // numbered straight through, and round again after the last tower
@@ -1737,6 +1788,70 @@ mod tests {
             }
             assert_eq!(g.floor, n + 1, "floor {n} ({}) not cleared: {} left", levels::floor(n).name, g.left());
         }
+    }
+
+    #[test]
+    fn every_roof_boss_can_be_beaten() {
+        for roof in floors_where(|k| matches!(k, FloorKind::Roof(_))) {
+            let mut g = Game::new(None);
+            g.load_floor(roof);
+            assert!(g.boss_left());
+            g.lives = 99;
+            let mut pilot = Pilot::new();
+            let mut secs = 0.0;
+            while g.floor == roof && secs < 400.0 {
+                let s = pilot.steer(&g);
+                g.step(s, true);
+                secs += STEP;
+            }
+            assert_eq!(g.floor, roof + 1, "{} never beaten", levels::floor(roof).name);
+            println!("{}: {secs:.0} s, {} lives lost", levels::floor(roof).name, 99 - g.lives);
+        }
+    }
+
+    #[test]
+    fn ice_cracks_then_breaks_and_the_ball_skids_off() {
+        let n = (0..levels::total()).find(|&n| levels::floor(n).rows.iter().any(|r| r.contains('i'))).unwrap();
+        let mut g = Game::new(None);
+        g.load_floor(n);
+        g.state = State::Play;
+        g.bricks.iter_mut().for_each(|b| *b = None);
+        let i = 3 * g.cols + 6;
+        g.bricks[i] = Some(Brick::new(Kind::Ice, start_hp(Kind::Ice, n)));
+        let (min, max) = g.brick_box(i);
+        // up into its underside at 45 degrees
+        let start = V2::new((min.x + max.x) / 2.0 - 4.0, max.y + 4.0);
+        g.balls = vec![Ball { p: start, v: V2::new(1.0, -1.0).norm() * g.speed }];
+        for _ in 0..60 {
+            g.move_ball(0);
+            if g.balls[0].v.y > 0.0 {
+                break;
+            }
+        }
+        let v = g.balls[0].v;
+        assert!(v.y > 0.0 && v.y < v.x, "didn't skid: {v:?}");
+        assert_eq!(g.bricks[i].map(|b| b.hp), Some(1));
+        g.hit_brick(i);
+        assert!(g.bricks[i].is_none());
+    }
+
+    #[test]
+    fn an_iced_paddle_slides() {
+        let mut g = Game::new(Some(Mode::Line));
+        g.state = State::Play;
+        g.balls = vec![Ball { p: V2::new(50.0, 20.0), v: V2::new(0.0, 0.0) }];
+        g.iced = 2.0;
+        g.move_paddle(Steer::Move(1.0));
+        assert!(g.paddle.vel > 0.0 && g.paddle.vel < PADDLE_SPEED * 0.1, "{}", g.paddle.vel);
+        for _ in 0..60 {
+            g.move_paddle(Steer::Move(1.0));
+        }
+        let fast = g.paddle.vel;
+        g.move_paddle(Steer::Move(0.0));
+        assert!(g.paddle.vel > fast * 0.9, "stopped dead on ice");
+        g.iced = 0.0;
+        g.move_paddle(Steer::Move(0.0));
+        assert_eq!(g.paddle.vel, 0.0);
     }
 
     #[test]

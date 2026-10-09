@@ -14,6 +14,11 @@
 //! volley of chimes at the paddle (one at first, up to three when hurt), and every
 //! few hits it winds a row of clockwork bricks beneath itself.
 //!
+//! The fourth tower's is the sea serpent, its neck rising over the lintel from the
+//! sea far below and its head swaying over the bricks. It spits freezing spray at
+//! the paddle (a hit ices it over: it slides, slow to start and slow to stop) and
+//! every few hits freezes a row of ice bricks beneath itself.
+//!
 //! The first tower's roof boss is the Storm Cloud: a thundercloud drifting over the
 //! roof with a glowing core, the target. The ball always flies straight under it; its
 //! threat is aimed at the paddle instead: it marks a stretch of the ring, and a moment
@@ -33,7 +38,7 @@
 //! the paddle can step into the quiet between them. Its swing turns slowly round;
 //! every few hits it lurches a quarter turn and tolls twice.
 //!
-//! The Weathercock (saved for a later tower's roof) is a giant iron weathervane in the
+//! The fourth tower's roof boss is the Weathercock: a giant iron weathervane in the
 //! middle of the roof, roaming round it in a slow figure. Its arrow swings slowly
 //! round and bats the ball away (it can't be hurt); the rooster at its hub is the
 //! target. Now and then it blows a gust along
@@ -48,6 +53,10 @@ pub use crate::levels::MiniKind;
 /// Spider's, leg tip to leg tip.
 pub const HALF: V2 = V2::new(7.0, 3.0);
 pub const SPIDER_HALF: V2 = V2::new(4.5, 3.0);
+pub const SERPENT_HALF: V2 = V2::new(5.0, 3.6);
+/// How much bigger the serpent's head is drawn than its sprite's own units.
+pub const SERPENT_SCALE: f32 = 1.3;
+const SPRAY_SPEED: f32 = 28.0;
 pub const JACK_HALF: V2 = V2::new(5.4, 4.9);
 /// How much bigger the Jack is drawn than its sprite's own units.
 pub const JACK_SCALE: f32 = 1.4;
@@ -75,6 +84,8 @@ pub enum ShotKind {
     Web,
     /// The Jack's chime: stuns the paddle.
     Chime,
+    /// The serpent's freezing spray: ices the paddle over.
+    Spray,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -144,7 +155,25 @@ impl MiniBoss {
             MiniKind::Gargoyle => HALF,
             MiniKind::Spider => SPIDER_HALF,
             MiniKind::Jack => JACK_HALF,
+            MiniKind::Serpent => SERPENT_HALF,
         }
+    }
+
+    /// The serpent's neck, from over the lintel down to the back of its head, as
+    /// points along a curve that sways.
+    pub fn neck(&self) -> [V2; 10] {
+        let anchor = V2::new(WORLD_W / 2.0 + 20.0 * (self.phase * 0.9 - 0.8).sin(), crate::game::FIELD_TOP - 1.0);
+        let end = self.p - V2::new(0.0, SERPENT_HALF.y * 0.6);
+        let mid = (anchor + end) * 0.5;
+        let d = end - anchor;
+        let side = V2::new(-d.y, d.x).norm();
+        let ctrl = mid + side * (5.0 * (self.t * 1.4).sin());
+        let mut out = [anchor; 10];
+        for (i, q) in out.iter_mut().enumerate() {
+            let k = i as f32 / 9.0;
+            *q = anchor * ((1.0 - k) * (1.0 - k)) + ctrl * (2.0 * k * (1.0 - k)) + end * (k * k);
+        }
+        out
     }
 
     pub fn bounds(&self) -> (V2, V2) {
@@ -174,6 +203,11 @@ impl MiniBoss {
                 11.5 + 2.2 * (self.t * 0.7 * self.rage()).sin(),
             ),
             // marching in ticks, like a clock's hand: a quick step, then a pause
+            // swaying on its neck, bobbing as if riding the swell
+            MiniKind::Serpent => V2::new(
+                WORLD_W / 2.0 + (SWAY + 1.0) * (self.phase * 0.9).sin(),
+                12.0 + 2.5 * (self.t * 1.1 * self.rage()).sin(),
+            ),
             MiniKind::Jack => {
                 let ticks = self.phase * 2.2;
                 let step = (ticks.fract() * 4.0).min(1.0);
@@ -191,11 +225,17 @@ impl MiniBoss {
             return;
         }
         // (the Jack's chimes ring out from the little bell at its side)
-        let mouth = self.p + if self.kind == MiniKind::Jack { V2::new(3.0, 0.8) * JACK_SCALE } else { V2::new(0.0, 1.0) };
+        let mouth = self.p
+            + match self.kind {
+                MiniKind::Jack => V2::new(3.0, 0.8) * JACK_SCALE,
+                MiniKind::Serpent => V2::new(0.0, 2.6),
+                _ => V2::new(0.0, 1.0),
+            };
         let (kind, speed) = match self.kind {
             MiniKind::Gargoyle => (ShotKind::Fire, SHOT_SPEED),
             MiniKind::Spider => (ShotKind::Web, WEB_SPEED),
             MiniKind::Jack => (ShotKind::Chime, CHIME_SPEED),
+            MiniKind::Serpent => (ShotKind::Spray, SPRAY_SPEED),
         };
         shots.push(Shot { p: mouth, v: (target - mouth).norm() * speed, kind });
         self.shots_fired += 1;
@@ -541,13 +581,13 @@ impl Rook {
 /// The Great Bell: its mouth's radius (the target), how far it swings either way,
 /// and how fast.
 pub const BELL_R: f32 = 4.2;
-const BELL_HP: u8 = 14;
+const BELL_HP: u8 = 16;
 const BELL_SWING: f32 = 5.0;
 const SWING_RATE: f32 = 1.3;
 /// How fast its swing turns round the roof, radians per second.
 const AXIS_TURN: f32 = 0.12;
 /// Seconds between tolls (fewer when hurt), and how long it shivers first.
-const TOLL_EVERY: f32 = 5.0;
+const TOLL_EVERY: f32 = 4.5;
 pub const TOLL_WARN: f32 = 1.1;
 /// The ring of sound: how fast it spreads, half of each loud arc (radians, front
 /// and back along the swing), and how thick it is.
@@ -976,7 +1016,7 @@ mod tests {
                 lurches += 1;
             }
         }
-        assert_eq!(lurches, 4);
+        assert_eq!(lurches, (BELL_HP - 1) / LURCH_EVERY);
     }
 
     #[test]

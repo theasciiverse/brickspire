@@ -417,6 +417,14 @@ fn draw_bell(cv: &mut Canvas, b: &Bell, centre: V2, ring: f32, time: f32) {
     cv.put(cc, cr, "Ω", if blink { bronze } else { Color::Rgb(255, 220, 130) }, None);
 }
 
+/// The sea serpent's head, two rows tall (smallest size) or four, jaw shut and jaw
+/// open (while it aims). Columns `SERPENT_HEAD` are its head, the rest fins.
+const SERPENT_SMALL: [[&str; 2]; 2] = [[" ╭●─●╮ ", "≈╰▼ ▼╯≈"], [" ╭●─●╮ ", "≈╰┬▼┬╯≈"]];
+const SERPENT_BIG: [[&str; 4]; 2] = [
+    [" ╭───────╮ ", "╱│ ●   ● │╲", "╲╰╮▼   ▼╭╯╱", "  ╰─────╯  "],
+    [" ╭───────╮ ", "╱│ ●   ● │╲", "╲╰╮ ┬─┬ ╭╯╱", "  ╰─▼─▼─╯  "],
+];
+
 /// The Jack, two rows tall (smallest size) or four, hammer raised and struck down
 /// on its bell. Columns `JACK_BODY` are its body, the rest hammer and bell.
 const JACK_SMALL: [[&str; 2]; 2] = [["╭(●●)▬┘", " ╱╨╲ Ω "], ["╭(●●)──", " ╱╨╲▬Ω "]];
@@ -447,6 +455,7 @@ fn draw_gargoyle(cv: &mut Canvas, g: &MiniBoss) {
     let big = rows_fit >= 4;
     let up = match g.kind {
         MiniKind::Spider => (g.t * 5.0).sin() < 0.0,
+        MiniKind::Serpent => !g.aiming(),
         MiniKind::Jack => g.swung > 0.2,
         MiniKind::Gargoyle => g.flap() < 0.0,
     };
@@ -458,6 +467,8 @@ fn draw_gargoyle(cv: &mut Canvas, g: &MiniBoss) {
         (MiniKind::Spider, false) => SPIDER_SMALL[frame].to_vec(),
         (MiniKind::Jack, true) => JACK_BIG[frame].to_vec(),
         (MiniKind::Jack, false) => JACK_SMALL[frame].to_vec(),
+        (MiniKind::Serpent, true) => SERPENT_BIG[frame].to_vec(),
+        (MiniKind::Serpent, false) => SERPENT_SMALL[frame].to_vec(),
     };
     let width = sprite.iter().map(|l| l.chars().count()).max().unwrap_or(0) as i32;
     let head = match (g.kind, big) {
@@ -467,7 +478,20 @@ fn draw_gargoyle(cv: &mut Canvas, g: &MiniBoss) {
         (MiniKind::Spider, false) => 1..=4,
         (MiniKind::Jack, true) => 1..=5,
         (MiniKind::Jack, false) => 0..=4,
+        (MiniKind::Serpent, true) => 1..=9,
+        (MiniKind::Serpent, false) => 1..=5,
     };
+    if g.kind == MiniKind::Serpent {
+        // its neck, up from the back of its head over the lintel
+        let neck = g.neck();
+        let cells = walk(cv, neck.windows(2).flat_map(|w| (0..6).map(move |i| w[0] + (w[1] - w[0]) * (i as f32 / 6.0))));
+        let (_, lintel) = cv.cell(V2::new(g.p.x, game::FIELD_TOP));
+        for (c, r, sym) in strokes(&cells, true, false) {
+            if r > lintel {
+                cv.put(c, r, sym, Color::Rgb(50, 140, 130), None);
+            }
+        }
+    }
     if spider {
         // its thread, up from its back to the lintel
         let (tc, top) = cv.cell(g.p - V2::new(0.0, g.half().y));
@@ -479,6 +503,7 @@ fn draw_gargoyle(cv: &mut Canvas, g: &MiniBoss) {
     let (body_fg, leg_fg) = match g.kind {
         MiniKind::Spider => (Color::Rgb(120, 80, 140), Color::Rgb(85, 60, 95)),
         MiniKind::Jack => (Color::Rgb(150, 155, 175), BRASS),
+        MiniKind::Serpent => (Color::Rgb(70, 175, 160), Color::Rgb(225, 85, 70)),
         MiniKind::Gargoyle => (GARGOYLE_STONE, GARGOYLE_WING),
     };
     let blink = g.hurt > 0.0 && (g.hurt * 12.0) as i32 % 2 == 0;
@@ -681,6 +706,7 @@ fn draw_tower(cv: &mut Canvas, game: &Game) {
                     };
                     let double = match b.kind {
                         Kind::Plain(_) | Kind::Stone | Kind::Vine | Kind::Web | Kind::Clock => false,
+                        Kind::Ice => b.hp > 1,
                         Kind::Steel => b.hp > 1,
                         Kind::Gilt => true,
                     };
@@ -699,6 +725,8 @@ fn brick_stroke(kind: Kind, double: bool, left: bool, right: bool, top: bool, bo
         (Kind::Vine, _) => (["{", "}"], "~", "§", ["╭", "╮", "╰", "╯"]),
         (Kind::Web, _) => (["├", "┤"], "┼", "┼", ["┌", "┐", "└", "┘"]),
         (Kind::Clock, _) => (["[", "]"], "¤", "¤", ["┌", "┐", "└", "┘"]),
+        (Kind::Ice, true) => (["╟", "╢"], "─", "║", ["╓", "╖", "╙", "╜"]),
+        (Kind::Ice, false) => (["╟", "╢"], "╌", "║", ["╓", "╖", "╙", "╜"]),
         (_, true) => (["╞", "╡"], "═", "│", ["╒", "╕", "╘", "╛"]),
         _ => (["├", "┤"], "─", "│", ["┌", "┐", "└", "┘"]),
     };
@@ -834,6 +862,7 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
         match shot.kind {
             ShotKind::Web => cv.put(c, r, "#", Color::Rgb(225, 225, 235), None),
             ShotKind::Chime => cv.put(c, r, "♪", Color::Rgb(255, 220, 120), None),
+            ShotKind::Spray => cv.put(c, r, "∴", Color::Rgb(200, 240, 255), None),
             ShotKind::Fire => cv.put(c, r, "*", FIRE, None),
         }
     }
@@ -843,6 +872,9 @@ pub fn draw(game: &Game, view: &View, buf: &mut Buffer) {
     let (body, ends) = if game.stun > 0.0 {
         let grey = if (game.time * 20.0) as i32 % 2 == 0 { Color::Rgb(90, 90, 100) } else { Color::Rgb(160, 160, 170) };
         (grey, grey)
+    } else if game.iced > 0.0 {
+        // frosted over
+        (Color::Rgb(200, 235, 250), PADDLE_END)
     } else if game.webbed > 0.0 {
         // gummed up with silk
         (Color::Rgb(225, 225, 235), PADDLE_END)
@@ -892,6 +924,12 @@ mod tests {
         }
         for frame in JACK_SMALL {
             assert!(frame.iter().all(|l| l.chars().count() == 7), "{frame:?}");
+        }
+        for frame in SERPENT_SMALL {
+            assert!(frame.iter().all(|l| l.chars().count() == 7), "{frame:?}");
+        }
+        for frame in SERPENT_BIG {
+            assert!(frame.iter().all(|l| l.chars().count() == 11), "{frame:?}");
         }
         for frame in JACK_BIG {
             assert!(frame.iter().all(|l| l.chars().count() == 10), "{frame:?}");

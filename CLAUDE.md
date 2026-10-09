@@ -186,6 +186,7 @@ cargo run --release -- --floor 5            # the Gargoyle's balcony (first mini
 cargo run --release -- --floor 6            # the Storm Cloud's roof (first tower boss)
 cargo run --release -- --floor 7            # the Ivy Tower (floors 7 to 12: spider on 11, rook on 12)
 cargo run --release -- --floor 13           # the Bell Tower (floors 13 to 18: the Jack on 17, the Great Bell on 18)
+cargo run --release -- --floor 19           # the Sea Tower (floors 19 to 24: the serpent on 23, the Weathercock on 24)
 cargo run --release -- --floor 6 --roof weathercock   # any roof boss on any roof: storm, rook, bell, weathercock
 cargo run --release -- --glyphs             # pipe graphics (g flips in the game)
 RUST_LOG=debug cargo run --release 2>brickspire.log
@@ -206,7 +207,8 @@ cargo test --release
   all the towers.
 - `boss.rs`: the mini-bosses, one shape of fight in three kinds (the Gargoyle spits
   fire and lays stone, the Spider spits web and spins web bricks, the Jack strikes
-  volleys of chimes and winds clockwork), the Storm Cloud (drifting, marking the
+  volleys of chimes and winds clockwork, the sea serpent sways on its neck, spits
+  freezing spray and freezes ice), the Storm Cloud (drifting, marking the
   ring, lightning, rain), the Rook (twig nest, hopping, crouch and swoop, patching),
   the Great Bell (swinging, tolling rings of sound loud along its swing, lurching)
   and the Weathercock (turning, gusts, spin-ups, hits).
@@ -225,6 +227,18 @@ cargo test --release
 - `input.rs`: keys (exact or timing), mouse chase and click, gamepad (stick aims on the roof).
 
 ## Status
+
+The Sea Tower (2026-10-09, overnight): a lighthouse in a storm, grey-white stone,
+storm clouds rolling and rain streaking the sky. Ice bricks (pale, glassy, a glint
+across): two hits, cracked after the first, and the ball skids off them, keeping
+only 55% of its speed away from the ice, so it leaves at a shallower angle. The
+Serpent's Balcony: the sea serpent (12 hits), its scaled neck rising over the
+lintel from the sea below, its head (red fins, yellow eyes) swaying over the
+bricks; it opens its jaws and spits freezing spray, which ices the paddle over for
+2.5 s: it slides, slow to get going and slow to stop. Every third hit it freezes a
+row of ice. Its roof has the Weathercock. Roof times for the autopilot: the Storm
+Cloud about 70 s, the Rook about 105, the Great Bell (16 hits, tolling every 4.5 s)
+and the Weathercock about 70.
 
 The Bell Tower (2026-10-09, overnight): warm sandstone at sunset. Clockwork bricks
 (brass, a cog turning in each): broken, one leaves a dotted outline that fills
