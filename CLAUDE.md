@@ -41,6 +41,38 @@ exact sweep is set by playtesting so it fits the field and plays well; start aro
 Nothing found combines a tower climb with a paddle that goes from flat, to an arc, to a full
 circle. That combination, and the camera that motivates it, is what this game adds.
 
+## Catalog neighbours
+
+- **mtg** (github.com/modern-terminal-games/mtg, MIT) has a classic brick breaker, `breaker`,
+  that David expects to be in the catalog alongside Brickspire. They are different games
+  (a straight classic versus the climb and the curved paths), so Brickspire should not
+  borrow mtg's look, so the two stay clearly apart side by side.
+
+## Reference games (read 2026-10-09)
+
+David found nine terminal brick breakers; their source was read, none was run. No code is
+taken from any of them. None does curved or circular paddle paths, and none corrects for
+terminal cells being taller than they are wide, so that part is ours to solve.
+
+- **mtg `breaker`** (MIT), a physics checklist worth keeping:
+  - keep each velocity component at 18% or more of the speed, so the ball never runs almost
+    straight up or almost sideways (no endless wall loops);
+  - pick a brick's bounce side by penetration depth, settle corner hits by the ball's
+    direction, let one brick count per step, push the ball out if it ends up inside a brick;
+  - a test proving the ball can't clear a whole column of bricks in one pass;
+  - fixed 60 Hz step with sub-steps (we go further with a proper sweep).
+- **bricktick** (Unlicense): the paddle's own movement nudges the ball on a hit; timed
+  power-ups; levels as a small data table.
+- **Brick-Breaker-Terminal-Based-Game v2** (Python, no licence: ideas only): a UFO boss that
+  follows the paddle, drops bombs, and rebuilds a brick shield once hurt. A starting point
+  for a first boss, not a design to copy.
+- **arcanoid.sh** (bolknote/shellgames, no licence: ideas only): levels written as
+  `x y type count` runs; bricks that weaken and change colour when hit.
+- **bashciiout** (no licence: ideas only): adapts the field to the terminal size; scrolling
+  star background.
+- Nothing to take: arkanoid-tui (no time step, tunnels), ENGG1340-Breakout and ASCII-Breakout
+  (near-copies, use-after-free on respawn), nbsdgames (no brick breaker in it).
+
 ## Rights
 
 - The brick-breaker rules (paddle, ball, bricks, falling power-up capsules, bosses) are genre
@@ -79,7 +111,7 @@ circle. That combination, and the camera that motivates it, is what this game ad
 - The bounce uses the path's normal at the contact point, plus a Doh It Again-style deflection
   from how far off-centre the ball hits. Clamp the outgoing angle so shots can't run almost
   parallel to the paddle.
-- Losing the ball: below the paddle line on floors, below the arc on boss floors, out of the
+- Losing the ball: below the paddle line on floors, below the arc on mini-boss floors, out of the
   ring on the roof.
 - Sweep the ball each step (no tunnelling through thin bricks at high speed).
 
