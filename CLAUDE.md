@@ -175,6 +175,8 @@ state snapshot about every 500 ms (paddle position and path, balls, active power
 - [ ] Tower 5's mini-boss. Built provisionally (overnight, 2026-10-09) as the Mason's
       apprentice on a scaffold, throwing bricks that chip the paddle short; David to
       confirm or pick another.
+- [ ] Tune how hard the fights at the top are (David, 2026-10-10, after playing the
+      whole game: everything else plays well).
 - [ ] Two-player co-op or versus over iroh? Doh It Again had both.
 - [ ] A level editor? Doh It Again had one.
 - [ ] Offer a "paddle-centric" view on the roof (the arena turns and the paddle stays at the
@@ -267,8 +269,9 @@ buzzes when stunned, webbed, iced or chipped; thunder for the Storm Cloud's bolt
 a deep bell for the Great Bell's toll, rushing wings for the Rook's swoop, a
 whistle for the Mason's lob, tick-tock as clockwork winds back in; jingles for a
 power-up, a cleared floor, a lost ball, a climbed tower, game over; a rush going
-on from the map. No music yet. Not yet heard on a real device overnight (only
-checked that every sound renders in range): needs a listen.
+on from the map. No music yet. David played it the next morning (2026-10-10):
+sound, floors and bosses all good; the fights at the top still need their
+difficulty tuned (see open questions).
 
 Ten floors a tower (2026-10-09, overnight): four floors, the mini-boss's balcony,
 four more, the roof; 50 floors in all. Beating a mini-boss now turns the tower to
