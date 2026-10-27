@@ -766,7 +766,7 @@ impl Game {
                 let ready = self.map().is_some_and(|p| p.ready());
                 let leave = match leave {
                     Some(l) => Some(l + STEP),
-                    None if (fire && ready) || t >= map::MAP_TIME => {
+                    None if (fire && ready) || self.map().is_some_and(|p| t >= p.wait()) => {
                         info!("map: going on");
                         self.events.push(Sound::Go);
                         Some(0.0)

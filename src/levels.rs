@@ -129,7 +129,8 @@ pub const TOWERS: &[Tower] = &[
         name: "The Brickspire",
         theme: Theme {
             sky: [[3, 3, 16], [34, 26, 74]],
-            stars: 1.0,
+            // the Mason's own tower: only the last few stars left above it
+            stars: 0.08,
             wall: [54, 48, 80],
             mortar: [30, 26, 48],
             fields: [[150, 150, 172], [205, 205, 220]],

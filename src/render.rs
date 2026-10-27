@@ -965,7 +965,8 @@ pub fn map_colour(p: &map::Progress, look: map::Look, i: u32, j: u32) -> Rgb {
         Look::Sky(k) => {
             let base = mix([10.0, 10.0, 34.0], [125.0, 72.0, 82.0], k * k);
             let h = hash(i, j);
-            if k < 0.55 && h % 97 == 0 { mix(base, [235.0, 235.0, 255.0], 0.6 * (1.0 - k)) } else { base }
+            let shining = ((h >> 9) & 0xff) as f32 / 255.0 < p.stars();
+            if k < 0.55 && h % 43 == 0 && shining { mix(base, [235.0, 235.0, 255.0], 0.6 * (1.0 - k)) } else { base }
         }
         Look::Mountain => [44.0, 38.0, 70.0],
         Look::Hill(d) => {

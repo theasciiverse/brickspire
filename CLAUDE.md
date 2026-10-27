@@ -27,6 +27,27 @@ of the boss fights: a new skill to learn, arriving just as the bosses get hard.
 The mini-boss arc is a shallow curve, well short of a half circle (decided 2026-10-09). Its
 exact sweep is set by playtesting so it fits the field and plays well; start around 90 degrees.
 
+## Story (David, 2026-10-27)
+
+**The stars are going out.** Every night the Lamplighter lights the stars;
+the Mason has walled the Lamplighter up at the top of the Brickspire, and one
+by one the stars go dark. You climb the five towers to break through, free
+the Lamplighter and light up the sky again.
+
+- The map between towers shows it: fewer stars after every tower
+  (`map::STARS_LEFT`, a full sky at the start down to 12% before the
+  Brickspire), and the Brickspire's own sky has only the last few
+  (`levels`: stars 0.08).
+- The ending is the map after the last roof (`Progress::ending`): "THE
+  MASON IS BEATEN!", "THE LAMPLIGHTER IS FREE!", "AND ONE BY ONE, THE
+  STARS COME BACK" while the sky fills again and the Lamplighter's light
+  glows at the Brickspire's tip, then "EVERY STAR SHINES AGAIN · THANK
+  YOU!" and "CLIMB AGAIN" into the second lap (`ENDING_LIGHT`,
+  `ENDING_FULL`; it moves on by itself after `ENDING_TIME`).
+- The title tagline is "THE STARS ARE GOING OUT · FIVE TOWERS TO CLIMB";
+  the map before the Brickspire adds "FREE THE LAMPLIGHTER".
+- Never "an Asciiverse ..." anywhere: Asciiverse is a place of equals.
+
 ## Prior art (checked 2026-10-09)
 
 - **Ballarena** (3FR Team, Acorn Archimedes, 1990): the paddle can travel round the bricks in
@@ -255,7 +276,7 @@ capsule cutting lives down to 9 (now it only ever adds one, up to 9).
 Title (2026-10-10, overnight): a new game opens on the map with BRICKSPIRE spelled
 in bricks across the top, each letter in a brick colour with a sheen sweeping
 across (bevelled half-block squares as big as fit; `├┤` pipes on their colour in
-pipe mode), "AN ASCIIVERSE BRICK BREAKER · FIVE TOWERS TO CLIMB" under it, then
+pipe mode), "THE STARS ARE GOING OUT · FIVE TOWERS TO CLIMB" under it, then
 "FIRST: THE OLD KEEP · space to climb". The best score is kept between games (in
 `$XDG_DATA_HOME`, `%APPDATA%` or `~/.local/share`, `brickspire/best`). Step 6 still
 lacks music.

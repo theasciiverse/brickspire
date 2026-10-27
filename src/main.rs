@@ -426,13 +426,20 @@ fn map_labels(p: &map::Progress, glyphs: bool, area: Rect, buf: &mut Buffer) {
     let mut below = world.y + world.height / 8 + 2;
     if p.start {
         below = title::draw(world, buf, glyphs, p.time, fade).max(world.y + 1);
-        banner(" AN ASCIIVERSE BRICK BREAKER · FIVE TOWERS TO CLIMB ", below, area, buf);
+        banner(" THE STARS ARE GOING OUT · FIVE TOWERS TO CLIMB ", below, area, buf);
         below += 2;
     }
     let title = if p.start {
         String::new()
-    } else if p.next <= p.from {
-        " EVERY TOWER CLIMBED · THE CLIMB BEGINS AGAIN ".to_string()
+    } else if p.ending() {
+        // the Mason beaten, the Lamplighter free, the sky lighting up again
+        match p.t {
+            t if t < map::ENDING_LIGHT => " THE MASON IS BEATEN! ",
+            t if t < (map::ENDING_LIGHT + map::ENDING_FULL) / 2.0 => " THE LAMPLIGHTER IS FREE! ",
+            t if t < map::ENDING_FULL => " AND ONE BY ONE, THE STARS COME BACK ",
+            _ => " EVERY STAR SHINES AGAIN · THANK YOU! ",
+        }
+        .to_string()
     } else {
         format!(" {} CLIMBED · TOWER BONUS 5000 ", map::SKYLINE[p.from].name.to_uppercase())
     };
@@ -440,8 +447,9 @@ fn map_labels(p: &map::Progress, glyphs: bool, area: Rect, buf: &mut Buffer) {
         banner(&title, world.y + world.height / 8, area, buf);
     }
     if p.ready() && p.leave.is_none() {
-        let word = if p.start { "FIRST" } else { "NEXT" };
-        banner(&format!(" {word}: {} · space to climb ", map::SKYLINE[p.next].name.to_uppercase()), below, area, buf);
+        let word = if p.start { "FIRST" } else if p.ending() { "CLIMB AGAIN" } else { "NEXT" };
+        let goal = if p.next == map::SKYLINE.len() - 1 { " · FREE THE LAMPLIGHTER" } else { "" };
+        banner(&format!(" {word}: {}{goal} · space to climb ", map::SKYLINE[p.next].name.to_uppercase()), below, area, buf);
     }
 }
 

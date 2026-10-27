@@ -49,6 +49,15 @@ pub const SKYLINE: [Landmark; 5] = [
 pub const TRAIL_START: f32 = 1.8;
 pub const TRAIL_TIME: f32 = 2.2;
 pub const MAP_TIME: f32 = 10.0;
+/// The ending (the map after the last tower): when the Lamplighter's light
+/// shows and the stars start coming back, when the sky is full again, and
+/// when it moves on by itself.
+pub const ENDING_LIGHT: f32 = 4.0;
+pub const ENDING_FULL: f32 = 13.0;
+pub const ENDING_TIME: f32 = 40.0;
+/// The share of the sky's stars still shining with this many towers climbed:
+/// the Mason is walling up the sky, and they go out as you climb.
+const STARS_LEFT: [f32; 5] = [1.0, 0.75, 0.5, 0.3, 0.12];
 /// How long the camera takes to pull back from the climbed tower's top, and to
 /// swoop in on the next tower when going on; how close it starts and ends.
 pub const ARRIVE: f32 = 1.6;
@@ -85,7 +94,36 @@ impl Progress {
     }
 
     pub fn ready(&self) -> bool {
-        if self.start { self.t > 0.8 } else { self.trail() >= 1.0 }
+        if self.start {
+            self.t > 0.8
+        } else if self.ending() {
+            self.t > ENDING_FULL
+        } else {
+            self.trail() >= 1.0
+        }
+    }
+
+    /// Every tower climbed: the Mason beaten and the Lamplighter free.
+    pub fn ending(&self) -> bool {
+        !self.start && self.next <= self.from
+    }
+
+    /// How long the map waits before going on by itself.
+    pub fn wait(&self) -> f32 {
+        if self.ending() { ENDING_TIME } else { MAP_TIME }
+    }
+
+    /// The share of the sky's stars shining, 0 to 1: fewer after every tower,
+    /// and in the ending, coming back one by one until the sky is full.
+    pub fn stars(&self) -> f32 {
+        if self.start {
+            return STARS_LEFT[0];
+        }
+        if self.ending() {
+            let k = ((self.t - ENDING_LIGHT) / (ENDING_FULL - ENDING_LIGHT)).clamp(0.0, 1.0);
+            return 0.05 + 0.95 * k;
+        }
+        STARS_LEFT[(self.from + 1).min(STARS_LEFT.len() - 1)]
     }
 
     /// The camera: 0 close on a tower, 1 the whole landscape; and the tower it is
@@ -271,6 +309,8 @@ fn tower(p: &Progress, k: usize, x: f32, y: f32, aspect: f32, ps: f32) -> Option
             Shape::Bell => (lx.abs() < 1.05 * (1.0 - up / 0.24)).then(|| mk(Part::Roof)).flatten(),
             Shape::Lighthouse if up < 0.1 => (lx.abs() < 0.75).then(|| mk(Part::Lamp)).flatten(),
             Shape::Lighthouse => (lx.abs() < 0.9 * (1.0 - (up - 0.1) / 0.1)).then(|| mk(Part::Roof)).flatten(),
+            // in the ending, the Lamplighter's light at the needle's tip
+            Shape::Spire if p.ending() && p.t > ENDING_LIGHT && up > 0.29 && up < 0.4 => (lx.abs() < 0.9).then(|| mk(Part::Lamp)).flatten(),
             Shape::Spire => (lx.abs() < 0.5 * (1.0 - up / 0.4)).then(|| mk(Part::Roof)).flatten(),
         };
     }

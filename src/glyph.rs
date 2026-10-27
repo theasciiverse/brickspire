@@ -830,7 +830,7 @@ fn draw_map(p: &map::Progress, area: Rect, buf: &mut Buffer) {
                 _ => [rgb[0] * 0.75, rgb[1] * 0.75, rgb[2] * 0.75],
             };
             let (sym, fg) = match look {
-                Look::Sky(k) if k < 0.55 && hash(c as u32, r as u32) % 41 == 0 => ("·", [200.0, 200.0, 230.0]),
+                Look::Sky(k) if k < 0.55 && hash(c as u32, r as u32) % 41 == 0 && ((hash(c as u32, r as u32) >> 9) & 0xff) as f32 / 255.0 < p.stars() => ("·", [200.0, 200.0, 230.0]),
                 Look::Hill(_) if hash(c as u32, r as u32) % 9 == 0 => ("^", [20.0, 40.0, 24.0]),
                 Look::Tower { part: Part::Ledge, known: true, .. } => ("─", [rgb[0] * 1.2, rgb[1] * 1.2, rgb[2] * 1.2]),
                 Look::Tower { part: Part::Window, known: true, .. } => ("┃", rgb),
