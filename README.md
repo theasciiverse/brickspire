@@ -11,9 +11,19 @@ own trick brick, a monster on its balcony and a boss on its roof. And as you
 climb, your paddle's path changes: straight on the floors, an arc on the
 balconies, a full circle round the roofs. Hurry, before the last star fades!
 
+## Play
+
+With [av](https://asciiverse.sh), the Asciiverse client:
+
 ```
-cargo run --release
+av install brickspire
+av play brickspire
 ```
+
+Or download the archive for your system from this repository's Releases,
+unpack it and run `./brickspire` (`brickspire.exe` on Windows).
+
+To build it yourself: `cargo run --release`.
 
 ## Keys
 
