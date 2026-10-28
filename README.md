@@ -48,3 +48,7 @@ Session log for bug reports: `RUST_LOG=debug brickspire 2>brickspire.log`
 ## Credits
 
 Sound is synthesised in the game.
+
+## Licence
+
+MIT; see [LICENSE](LICENSE).
