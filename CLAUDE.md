@@ -267,6 +267,8 @@ cargo test --release -- --ignored --nocapture   # the whole climb, title to the 
 
 ## Status
 
+Version 0.8.0 (2026-10-28). What comes next, release by release, is in `ROADMAP.md`.
+
 The whole climb (2026-10-10, overnight): a test has the autopilot play a new game
 from the title through all 50 floors, five maps and five roofs, to the start of
 the second lap: about 68 minutes of game time, 11 lives lost (it never dodges on
