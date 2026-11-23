@@ -25,7 +25,8 @@ env -u VTE_VERSION -u TERM_PROGRAM -u TERM_PROGRAM_VERSION -u KITTY_WINDOW_ID \
   -u WEZTERM_PANE -u KONSOLE_VERSION -u ALACRITTY_WINDOW_ID -u WT_SESSION \
   TERM=xterm-256color COLORTERM=truecolor LANG=C.UTF-8 LC_ALL=C.UTF-8 \
   USER=player LOGNAME=player XDG_DATA_HOME="$data" XDG_STATE_HOME="$data" \
+  PATH="$(pwd)/target/release:$PATH" \
   asciinema rec --window-size 100x30 --idle-time-limit 2 \
     --capture-env TERM,COLORTERM,LANG --title Brickspire \
-    --command "$(pwd)/target/release/brickspire" "$out"
+    --command brickspire "$out"   # the name alone: the command is kept in the cast
 echo "Recorded $out ($(du -h "$out" | cut -f1))"
